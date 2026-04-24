@@ -1,9 +1,38 @@
 use anyhow::{Result, anyhow};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use hf_hub::api::sync::ApiBuilder;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 const MODEL_REPO: &str = "intfloat/multilingual-e5-small";
+pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
+
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    cache_dir: Option<PathBuf>,
+}
+
+impl Options {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// キャッシュディレクトリを明示指定する(環境変数・デフォルトより優先)
+    pub fn with_cache_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.cache_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// 実際に使用するキャッシュパスを解決する
+    /// 優先順位: 明示指定 > `NARASHI_CACHE_DIR` > `std::env::temp_dir()/narashi`
+    pub fn resolved_cache_dir(&self) -> PathBuf {
+        self.cache_dir
+            .clone()
+            .or_else(|| std::env::var_os(CACHE_DIR_ENV).map(PathBuf::from))
+            .unwrap_or_else(|| std::env::temp_dir().join("narashi"))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Group {
@@ -18,10 +47,27 @@ pub struct Narashi {
 
 impl Narashi {
     pub fn new() -> Result<Self> {
+        Self::with_options(Options::default())
+    }
+
+    pub fn with_options(opts: Options) -> Result<Self> {
+        let cache_dir = opts.resolved_cache_dir();
+        std::fs::create_dir_all(&cache_dir)?;
+
         let embedder = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::MultilingualE5Small),
+            InitOptions::new(EmbeddingModel::MultilingualE5Small)
+                .with_cache_dir(cache_dir.clone()),
         )?;
-        let tokenizer = Tokenizer::from_pretrained(MODEL_REPO, None)
+
+        let api = ApiBuilder::new()
+            .with_cache_dir(cache_dir)
+            .build()
+            .map_err(|e| anyhow!("hf-hub init failed: {e}"))?;
+        let repo = api.model(MODEL_REPO.to_string());
+        let tokenizer_path = repo
+            .get("tokenizer.json")
+            .map_err(|e| anyhow!("tokenizer download failed: {e}"))?;
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("tokenizer load failed: {e}"))?;
         Ok(Self { embedder, tokenizer })
     }
@@ -156,6 +202,27 @@ mod tests {
         assert!((cosine_to_score(1.0) - 100.0).abs() < 1e-4);
         assert!((cosine_to_score(0.0) - 50.0).abs() < 1e-4);
         assert!((cosine_to_score(-1.0) - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn options_resolution_precedence() {
+        // SAFETY: mutates process env; single test avoids races with peers
+        unsafe { std::env::remove_var(CACHE_DIR_ENV); }
+
+        let resolved = Options::new().resolved_cache_dir();
+        assert!(resolved.starts_with(std::env::temp_dir()));
+        assert!(resolved.ends_with("narashi"));
+
+        unsafe { std::env::set_var(CACHE_DIR_ENV, "/from/env"); }
+        let resolved = Options::new().resolved_cache_dir();
+        assert_eq!(resolved, PathBuf::from("/from/env"));
+
+        let resolved = Options::new()
+            .with_cache_dir("/explicit/path")
+            .resolved_cache_dir();
+        assert_eq!(resolved, PathBuf::from("/explicit/path"));
+
+        unsafe { std::env::remove_var(CACHE_DIR_ENV); }
     }
 
     #[test]

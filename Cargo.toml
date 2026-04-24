@@ -7,3 +7,5 @@ edition = "2024"
 fastembed = "4"
 tokenizers = { version = "0.20", default-features = false, features = ["http", "onig"] }
 anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hf-hub = "0.3"
