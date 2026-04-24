@@ -1,3 +1,49 @@
+//! 多言語埋め込みを使って類似テキストを検出し、より汎用的な表記に統合することで
+//! 表記ゆれを解消するライブラリ。
+//!
+//! # 仕組み
+//!
+//! - **類似度判定**: 多言語 E5 (`intfloat/multilingual-e5-small`) で各テキストを
+//!   ベクトル化し、コサイン類似度を 0〜100 スコアに変換
+//! - **汎用性判定**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを
+//!   代表 (canonical) として採用(短く・低IDなトークンで構成されるほど汎用的とみなす)
+//! - **グルーピング**: 閾値以上のペアを union-find で連結成分化
+//!
+//! # 使い方
+//!
+//! ```no_run
+//! use narashi::Narashi;
+//!
+//! let n = Narashi::new()?;
+//! let score = n.similarity("白い背景", "白背景")?;
+//! println!("{score:.1}");
+//! # anyhow::Ok(())
+//! ```
+//!
+//! 複数テキストをまとめて正規化:
+//!
+//! ```no_run
+//! use narashi::Narashi;
+//!
+//! let n = Narashi::new()?;
+//! let texts: Vec<String> = ["白い背景", "白背景", "漫画", "マンガ"]
+//!     .iter().map(|s| s.to_string()).collect();
+//! let groups = n.normalize(&texts, 95.0)?;
+//! for g in &groups {
+//!     println!("{} <- {:?}", g.canonical, g.members);
+//! }
+//! # anyhow::Ok(())
+//! ```
+//!
+//! # キャッシュ
+//!
+//! モデル・トークナイザは初回実行時に自動ダウンロードされます(約 500MB)。
+//! 保存先の優先順位は以下のとおり:
+//!
+//! 1. [`Options::with_cache_dir`] による明示指定
+//! 2. 環境変数 [`CACHE_DIR_ENV`] (`NARASHI_CACHE_DIR`)
+//! 3. `std::env::temp_dir().join("narashi")`
+
 use anyhow::{Result, anyhow};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use hf_hub::api::sync::ApiBuilder;
@@ -6,14 +52,18 @@ use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 const MODEL_REPO: &str = "intfloat/multilingual-e5-small";
+
+/// キャッシュ保存先を上書きするための環境変数名 (`NARASHI_CACHE_DIR`)
 pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
 
+/// [`Narashi`] の初期化オプション
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     cache_dir: Option<PathBuf>,
 }
 
 impl Options {
+    /// デフォルト値でオプションを生成する
     pub fn new() -> Self {
         Self::default()
     }
@@ -25,7 +75,8 @@ impl Options {
     }
 
     /// 実際に使用するキャッシュパスを解決する
-    /// 優先順位: 明示指定 > `NARASHI_CACHE_DIR` > `std::env::temp_dir()/narashi`
+    ///
+    /// 優先順位: 明示指定 > [`CACHE_DIR_ENV`] > `std::env::temp_dir()/narashi`
     pub fn resolved_cache_dir(&self) -> PathBuf {
         self.cache_dir
             .clone()
@@ -34,22 +85,38 @@ impl Options {
     }
 }
 
+/// 1つの統合グループ
+///
+/// `canonical` が代表となるテキスト、`members` はそれに統合された元のテキスト
+/// すべて(canonical 自身も含む)。元のテキストがどの代表に統合されたかを
+/// 追跡するためにこの構造体を返します。
 #[derive(Debug, Clone)]
 pub struct Group {
+    /// グループの代表テキスト(最も汎用的)
     pub canonical: String,
+    /// グループに含まれる全テキスト(canonical 自身も含む)
     pub members: Vec<String>,
 }
 
+/// 表記ゆれ解消の本体
+///
+/// 埋め込みモデルとトークナイザを保持し、類似度の計算とグルーピングを行います。
+/// モデルの読み込みには時間がかかるため、複数回使う場合は同じインスタンスを
+/// 再利用してください。
 pub struct Narashi {
     embedder: TextEmbedding,
     tokenizer: Tokenizer,
 }
 
 impl Narashi {
+    /// デフォルト設定で初期化する
+    ///
+    /// 必要に応じてモデル・トークナイザをダウンロードします(初回のみ、約 500MB)。
     pub fn new() -> Result<Self> {
         Self::with_options(Options::default())
     }
 
+    /// 指定したオプションで初期化する
     pub fn with_options(opts: Options) -> Result<Self> {
         let cache_dir = opts.resolved_cache_dir();
         std::fs::create_dir_all(&cache_dir)?;
@@ -72,6 +139,9 @@ impl Narashi {
         Ok(Self { embedder, tokenizer })
     }
 
+    /// 2つのテキストの類似度を 0〜100 で返す
+    ///
+    /// 100 に近いほど類似。コサイン類似度 `[-1, 1]` を `[0, 100]` に線形変換した値です。
     pub fn similarity(&self, a: &str, b: &str) -> Result<f32> {
         let inputs = vec![format!("query: {a}"), format!("query: {b}")];
         let embeddings = self.embedder.embed(inputs, None)?;
@@ -81,6 +151,10 @@ impl Narashi {
         )))
     }
 
+    /// テキスト群を表記ゆれごとにグループ化し、代表(canonical)を選出する
+    ///
+    /// `threshold` (0〜100) 以上の類似度を持つペアは同じグループに統合されます。
+    /// 各グループの代表は `(トークン数, トークンID合計)` の辞書式最小によって決定されます。
     pub fn normalize(&self, texts: &[String], threshold: f32) -> Result<Vec<Group>> {
         let n = texts.len();
         if n == 0 {
