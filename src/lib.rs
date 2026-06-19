@@ -3,11 +3,13 @@
 //!
 //! # 仕組み
 //!
-//! - **類似度判定**: 多言語 E5 (`intfloat/multilingual-e5-small`) で各テキストを
-//!   ベクトル化し、コサイン類似度を 0〜100 スコアに変換
+//! - **類似度判定**: 多言語埋め込みモデル(既定: `intfloat/multilingual-e5-small`)で
+//!   各テキストをベクトル化し、コサイン類似度をモデル固有のベースライン基準で
+//!   0〜100 スコアに校正(高帯域に偏るコサイン値を識別しやすいスケールへ展開)
 //! - **汎用性判定**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを
 //!   代表 (canonical) として採用(短く・低IDなトークンで構成されるほど汎用的とみなす)
-//! - **グルーピング**: 閾値以上のペアを union-find で連結成分化
+//! - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア判定は並列化)
+//! - **モデル選択**: [`Options::with_model`] で同規模の対称類似度モデル等へ切替可能
 //!
 //! # 使い方
 //!
@@ -28,7 +30,7 @@
 //! let n = Narashi::new()?;
 //! let texts: Vec<String> = ["白い背景", "白背景", "漫画", "マンガ"]
 //!     .iter().map(|s| s.to_string()).collect();
-//! let groups = n.normalize(&texts, 95.0)?;
+//! let groups = n.normalize(&texts, 70.0)?;
 //! for g in &groups {
 //!     println!("{} <- {:?}", g.canonical, g.members);
 //! }
@@ -45,21 +47,82 @@
 //! 3. `std::env::temp_dir().join("narashi")`
 
 use anyhow::{Result, anyhow};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+pub use fastembed::EmbeddingModel;
+use fastembed::{InitOptions, TextEmbedding};
 use hf_hub::api::sync::ApiBuilder;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-const MODEL_REPO: &str = "intfloat/multilingual-e5-small";
-
 /// キャッシュ保存先を上書きするための環境変数名 (`NARASHI_CACHE_DIR`)
 pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
+
+/// 既定の埋め込みモデル(paraphrase-multilingual-MiniLM-L12-v2)
+///
+/// E5 small と同規模(384次元/12層)ながら対称的な文類似度向けに学習されており、
+/// 日本語の短い表記ゆれ(例: 「猫」⇔「ネコ」)で E5 を大きく上回る識別力を示す。
+pub const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::ParaphraseMLMiniLML12V2;
+
+/// モデルごとの取り扱いを記述したメタ情報
+///
+/// モデルによって入力プレフィックスやコサイン類似度の分布が異なるため、
+/// トークナイザ取得元・プレフィックス・スコア校正のベースラインを切り替える。
+struct ModelSpec {
+    /// `tokenizer.json` を取得する Hugging Face リポジトリ ID
+    hf_repo: &'static str,
+    /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
+    query_prefix: &'static str,
+    /// スコア校正の基準となるコサイン値(無関係な短文ペアの典型的な下限)
+    ///
+    /// この値を 0、コサイン 1.0 を 100 に写像してスコアの識別力を高める。
+    cos_baseline: f32,
+}
+
+/// 指定モデルの取り扱いメタ情報を返す
+fn model_spec(model: &EmbeddingModel) -> ModelSpec {
+    match model {
+        EmbeddingModel::MultilingualE5Small => ModelSpec {
+            hf_repo: "intfloat/multilingual-e5-small",
+            query_prefix: "query: ",
+            cos_baseline: 0.70,
+        },
+        EmbeddingModel::MultilingualE5Base => ModelSpec {
+            hf_repo: "intfloat/multilingual-e5-base",
+            query_prefix: "query: ",
+            cos_baseline: 0.70,
+        },
+        EmbeddingModel::MultilingualE5Large => ModelSpec {
+            hf_repo: "intfloat/multilingual-e5-large",
+            query_prefix: "query: ",
+            cos_baseline: 0.70,
+        },
+        EmbeddingModel::ParaphraseMLMiniLML12V2 | EmbeddingModel::ParaphraseMLMiniLML12V2Q => {
+            ModelSpec {
+                hf_repo: "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+                query_prefix: "",
+                cos_baseline: 0.30,
+            }
+        }
+        EmbeddingModel::ParaphraseMLMpnetBaseV2 => ModelSpec {
+            hf_repo: "Xenova/paraphrase-multilingual-mpnet-base-v2",
+            query_prefix: "",
+            cos_baseline: 0.30,
+        },
+        // 未対応モデルは E5 small 相当の保守的な既定で扱う
+        _ => ModelSpec {
+            hf_repo: "intfloat/multilingual-e5-small",
+            query_prefix: "query: ",
+            cos_baseline: 0.70,
+        },
+    }
+}
 
 /// [`Narashi`] の初期化オプション
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     cache_dir: Option<PathBuf>,
+    model: Option<EmbeddingModel>,
 }
 
 impl Options {
@@ -72,6 +135,17 @@ impl Options {
     pub fn with_cache_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.cache_dir = Some(dir.as_ref().to_path_buf());
         self
+    }
+
+    /// 使用する埋め込みモデルを指定する(未指定時は [`DEFAULT_MODEL`])
+    pub fn with_model(mut self, model: EmbeddingModel) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    /// 実際に使用する埋め込みモデルを解決する
+    pub fn resolved_model(&self) -> EmbeddingModel {
+        self.model.clone().unwrap_or(DEFAULT_MODEL)
     }
 
     /// 実際に使用するキャッシュパスを解決する
@@ -106,6 +180,10 @@ pub struct Group {
 pub struct Narashi {
     embedder: TextEmbedding,
     tokenizer: Tokenizer,
+    /// 埋め込み入力に付与するプレフィックス(モデル依存)
+    query_prefix: &'static str,
+    /// スコア校正の基準コサイン値(モデル依存)
+    cos_baseline: f32,
 }
 
 impl Narashi {
@@ -121,34 +199,57 @@ impl Narashi {
         let cache_dir = opts.resolved_cache_dir();
         std::fs::create_dir_all(&cache_dir)?;
 
-        let embedder = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::MultilingualE5Small)
-                .with_cache_dir(cache_dir.clone()),
-        )?;
+        let model = opts.resolved_model();
+        let spec = model_spec(&model);
+
+        let embedder =
+            TextEmbedding::try_new(InitOptions::new(model).with_cache_dir(cache_dir.clone()))?;
 
         let api = ApiBuilder::new()
             .with_cache_dir(cache_dir)
             .build()
             .map_err(|e| anyhow!("hf-hub init failed: {e}"))?;
-        let repo = api.model(MODEL_REPO.to_string());
+        let repo = api.model(spec.hf_repo.to_string());
         let tokenizer_path = repo
             .get("tokenizer.json")
             .map_err(|e| anyhow!("tokenizer download failed: {e}"))?;
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("tokenizer load failed: {e}"))?;
-        Ok(Self { embedder, tokenizer })
+        Ok(Self {
+            embedder,
+            tokenizer,
+            query_prefix: spec.query_prefix,
+            cos_baseline: spec.cos_baseline,
+        })
     }
 
     /// 2つのテキストの類似度を 0〜100 で返す
     ///
-    /// 100 に近いほど類似。コサイン類似度 `[-1, 1]` を `[0, 100]` に線形変換した値です。
+    /// 100 に近いほど類似。コサイン類似度をモデル固有のベースライン(無関係な
+    /// 短文ペアの典型的な下限)を 0、完全一致 1.0 を 100 として校正した値です。
+    /// これにより高帯域に偏りがちなコサイン値を識別しやすいスケールへ広げます。
     pub fn similarity(&self, a: &str, b: &str) -> Result<f32> {
-        let inputs = vec![format!("query: {a}"), format!("query: {b}")];
-        let embeddings = self.embedder.embed(inputs, None)?;
-        Ok(cosine_to_score(cosine_similarity(
-            &embeddings[0],
-            &embeddings[1],
-        )))
+        let embeddings = self.embed_normalized(&[a.to_string(), b.to_string()])?;
+        Ok(self.score(dot(&embeddings[0], &embeddings[1])))
+    }
+
+    /// 入力テキスト群をプレフィックス付きで埋め込み、各ベクトルを L2 正規化して返す
+    ///
+    /// 正規化済みベクトル同士のコサイン類似度はドット積に一致するため、
+    /// 以降のペア比較では平方根を伴う norm 再計算を省ける。
+    fn embed_normalized(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let inputs: Vec<String> = texts
+            .iter()
+            .map(|t| format!("{}{}", self.query_prefix, t))
+            .collect();
+        let mut embeddings = self.embedder.embed(inputs, None)?;
+        embeddings.par_iter_mut().for_each(|v| normalize_l2(v));
+        Ok(embeddings)
+    }
+
+    /// コサイン類似度を 0〜100 のスコアへ校正する(モデル依存のベースライン基準)
+    fn score(&self, cos: f32) -> f32 {
+        ((cos - self.cos_baseline) / (1.0 - self.cos_baseline)).clamp(0.0, 1.0) * 100.0
     }
 
     /// テキスト群を表記ゆれごとにグループ化し、代表(canonical)を選出する
@@ -161,17 +262,24 @@ impl Narashi {
             return Ok(vec![]);
         }
 
-        let inputs: Vec<String> = texts.iter().map(|t| format!("query: {t}")).collect();
-        let embeddings = self.embedder.embed(inputs, None)?;
+        let embeddings = self.embed_normalized(texts)?;
+        let embeddings = &embeddings;
+
+        // O(n²) のペア判定を rayon で並列化し、閾値以上のペアだけ収集する。
+        // union 自体は安価なため、収集後に逐次でまとめる。
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .into_par_iter()
+            .flat_map_iter(|i| {
+                ((i + 1)..n).filter_map(move |j| {
+                    let sim = self.score(dot(&embeddings[i], &embeddings[j]));
+                    (sim >= threshold).then_some((i, j))
+                })
+            })
+            .collect();
 
         let mut uf = UnionFind::new(n);
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let sim = cosine_to_score(cosine_similarity(&embeddings[i], &embeddings[j]));
-                if sim >= threshold {
-                    uf.union(i, j);
-                }
-            }
+        for (i, j) in pairs {
+            uf.union(i, j);
         }
 
         let keys: Vec<(usize, u64)> = texts
@@ -188,8 +296,7 @@ impl Narashi {
             .into_values()
             .map(|indices| {
                 let canonical_idx = *indices.iter().min_by_key(|&&i| keys[i]).unwrap();
-                let mut members: Vec<String> =
-                    indices.iter().map(|&i| texts[i].clone()).collect();
+                let mut members: Vec<String> = indices.iter().map(|&i| texts[i].clone()).collect();
                 members.sort();
                 Group {
                     canonical: texts[canonical_idx].clone(),
@@ -214,18 +321,19 @@ impl Narashi {
     }
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
+/// ベクトルを L2 ノルムで正規化する(ゼロベクトルは変更しない)
+fn normalize_l2(v: &mut [f32]) {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in v.iter_mut() {
+            *x /= norm;
+        }
     }
-    dot / (norm_a * norm_b)
 }
 
-fn cosine_to_score(cos: f32) -> f32 {
-    ((cos + 1.0) / 2.0 * 100.0).clamp(0.0, 100.0)
+/// 内積を返す。L2 正規化済みベクトル同士ではコサイン類似度に一致する。
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 struct UnionFind {
@@ -259,35 +367,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cosine_identical() {
-        let a = [1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &a) - 1.0).abs() < 1e-6);
+    fn normalized_dot_identical() {
+        let mut a = [3.0, 0.0, 0.0];
+        normalize_l2(&mut a);
+        assert!((dot(&a, &a) - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn cosine_orthogonal() {
-        let a = [1.0, 0.0, 0.0];
-        let b = [0.0, 1.0, 0.0];
-        assert!(cosine_similarity(&a, &b).abs() < 1e-6);
+    fn normalized_dot_orthogonal() {
+        let mut a = [1.0, 0.0, 0.0];
+        let mut b = [0.0, 2.0, 0.0];
+        normalize_l2(&mut a);
+        normalize_l2(&mut b);
+        assert!(dot(&a, &b).abs() < 1e-6);
     }
 
     #[test]
-    fn score_range() {
-        assert!((cosine_to_score(1.0) - 100.0).abs() < 1e-4);
-        assert!((cosine_to_score(0.0) - 50.0).abs() < 1e-4);
-        assert!((cosine_to_score(-1.0) - 0.0).abs() < 1e-4);
+    fn normalize_l2_zero_vector() {
+        let mut z = [0.0, 0.0, 0.0];
+        normalize_l2(&mut z);
+        assert_eq!(z, [0.0, 0.0, 0.0]);
+    }
+
+    /// スコア校正: コサイン=baseline で 0、=1.0 で 100、baseline 未満は 0 にクランプ。
+    fn score_with(baseline: f32, cos: f32) -> f32 {
+        ((cos - baseline) / (1.0 - baseline)).clamp(0.0, 1.0) * 100.0
+    }
+
+    #[test]
+    fn score_calibration_range() {
+        let base = 0.70;
+        assert!((score_with(base, 1.0) - 100.0).abs() < 1e-4);
+        assert!((score_with(base, base) - 0.0).abs() < 1e-4);
+        // baseline 未満は下限クランプ
+        assert!((score_with(base, 0.5) - 0.0).abs() < 1e-4);
+        // 中間点(baseline と 1.0 の中央)は 50
+        assert!((score_with(base, (base + 1.0) / 2.0) - 50.0).abs() < 1e-4);
     }
 
     #[test]
     fn options_resolution_precedence() {
         // SAFETY: mutates process env; single test avoids races with peers
-        unsafe { std::env::remove_var(CACHE_DIR_ENV); }
+        unsafe {
+            std::env::remove_var(CACHE_DIR_ENV);
+        }
 
         let resolved = Options::new().resolved_cache_dir();
         assert!(resolved.starts_with(std::env::temp_dir()));
         assert!(resolved.ends_with("narashi"));
 
-        unsafe { std::env::set_var(CACHE_DIR_ENV, "/from/env"); }
+        unsafe {
+            std::env::set_var(CACHE_DIR_ENV, "/from/env");
+        }
         let resolved = Options::new().resolved_cache_dir();
         assert_eq!(resolved, PathBuf::from("/from/env"));
 
@@ -296,7 +427,9 @@ mod tests {
             .resolved_cache_dir();
         assert_eq!(resolved, PathBuf::from("/explicit/path"));
 
-        unsafe { std::env::remove_var(CACHE_DIR_ENV); }
+        unsafe {
+            std::env::remove_var(CACHE_DIR_ENV);
+        }
     }
 
     #[test]
@@ -313,7 +446,9 @@ mod tests {
     fn real_similarity_high() {
         let n = Narashi::new().unwrap();
         let s = n.similarity("猫", "ネコ").unwrap();
-        assert!(s > 70.0, "expected high similarity, got {s}");
+        // 校正後スケール: 関連の強い表記ゆれは非類似ペアより明確に高くなる
+        // (既定モデル paraphrase では「猫」⇔「ネコ」は ~95)
+        assert!(s > 80.0, "expected high similarity, got {s}");
     }
 
     #[test]
@@ -324,7 +459,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let groups = n.normalize(&texts, 80.0).unwrap();
+        let groups = n.normalize(&texts, 70.0).unwrap();
         for g in &groups {
             println!("canonical={} members={:?}", g.canonical, g.members);
         }

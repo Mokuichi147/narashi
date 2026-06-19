@@ -1,14 +1,42 @@
 use anyhow::Result;
-use clap::Parser;
-use narashi::{Group, Narashi, Options};
+use clap::{Parser, ValueEnum};
+use narashi::{EmbeddingModel, Group, Narashi, Options};
 use std::path::PathBuf;
+
+/// CLI から選択できる埋め込みモデル
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ModelArg {
+    /// paraphrase-multilingual-MiniLM-L12-v2 (既定・対称類似度向け)
+    Paraphrase,
+    /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
+    ParaphraseQ,
+    /// 多言語 E5 small (検索向けチューニング・同規模)
+    Small,
+    /// 多言語 E5 base (高次元・低速)
+    Base,
+}
+
+impl From<ModelArg> for EmbeddingModel {
+    fn from(m: ModelArg) -> Self {
+        match m {
+            ModelArg::Small => EmbeddingModel::MultilingualE5Small,
+            ModelArg::Base => EmbeddingModel::MultilingualE5Base,
+            ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2,
+            ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "narashi", about = "表記ゆれ解消ツール")]
 struct Cli {
     /// 類似度の閾値 (0-100)
-    #[arg(short, long, default_value_t = 95.0)]
+    #[arg(short, long, default_value_t = 70.0)]
     threshold: f32,
+
+    /// 使用する埋め込みモデル
+    #[arg(long, value_enum, default_value_t = ModelArg::Paraphrase)]
+    model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
     #[arg(long, env = "NARASHI_CACHE_DIR")]
@@ -21,7 +49,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut opts = Options::new();
+    let mut opts = Options::new().with_model(cli.model.into());
     if let Some(dir) = cli.cache_dir {
         opts = opts.with_cache_dir(dir);
     }
