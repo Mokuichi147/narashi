@@ -167,11 +167,80 @@ pub struct Benchmark {
 /// 既定でスイープする閾値 (50〜95 を 5 刻み)
 pub const SWEEP_THRESHOLDS: &[f32] = &[50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0];
 
+/// 1 ペア分のスコア情報 `(添字 i, 添字 j, スコア, 正例フラグ)`
+///
+/// 添字を保持することで、同じ埋め込みから任意の閾値でのクラスタリングを再計算できる。
+type ScoredPair = (usize, usize, f32, bool);
+
+/// 全ペアのスコア (添字・スコア・正例フラグ) を 1 度だけ計算する。
+///
+/// 同じ埋め込みから任意の閾値でのクラスタリングを再計算できるよう、添字付きで返す。
+fn scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<(usize, Vec<ScoredPair>)> {
+    let (terms, group_ids) = glossary.flatten();
+    let num = terms.len();
+    let embeddings = n.embed_normalized(&terms)?;
+    let mut scored: Vec<(usize, usize, f32, bool)> = Vec::with_capacity(num * num / 2);
+    for i in 0..num {
+        for j in (i + 1)..num {
+            let s = n.score(dot(&embeddings[i], &embeddings[j]));
+            scored.push((i, j, s, group_ids[i] == group_ids[j]));
+        }
+    }
+    Ok((num, scored))
+}
+
+/// 添字付きスコアから、各閾値の分類 F1 とクラスタ F1 (推移閉包込み) を算出する。
+fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> Vec<SweepRow> {
+    thresholds
+        .iter()
+        .map(|&t| {
+            let (mut stp, mut sfp, mut sfn) = (0usize, 0usize, 0usize);
+            for &(_, _, s, positive) in scored {
+                match (positive, s >= t) {
+                    (true, true) => stp += 1,
+                    (false, true) => sfp += 1,
+                    (true, false) => sfn += 1,
+                    (false, false) => {}
+                }
+            }
+            let (_, _, class_f1) = prf(stp, sfp, sfn);
+
+            let roots = connected_roots(num, scored, t);
+            let (mut ctp, mut cfp, mut cfn) = (0usize, 0usize, 0usize);
+            for &(i, j, _, positive) in scored {
+                match (positive, roots[i] == roots[j]) {
+                    (true, true) => ctp += 1,
+                    (false, true) => cfp += 1,
+                    (true, false) => cfn += 1,
+                    (false, false) => {}
+                }
+            }
+            let (cp, cr, cluster_f1) = prf(ctp, cfp, cfn);
+            SweepRow {
+                threshold: t,
+                class_f1,
+                cluster_f1,
+                cluster_precision: cp,
+                cluster_recall: cr,
+            }
+        })
+        .collect()
+}
+
+/// 任意の閾値群でスイープし、各閾値の分類 F1・クラスタ F1・P・R を返す。
+///
+/// 埋め込みを 1 度だけ計算して使い回すため、細かい刻みのスイープでも高速。
+/// 既定閾値以外でのモデル挙動 (ピークの位置・鋭さ) を検証するのに使う。
+pub fn sweep(n: &Narashi, glossary: &Glossary, thresholds: &[f32]) -> Result<Vec<SweepRow>> {
+    let (num, scored) = scored_pairs(n, glossary)?;
+    Ok(sweep_from_scored(num, &scored, thresholds))
+}
+
 /// 全要素を独立成分とし、閾値以上のペアを連結した連結成分の代表を返す。
 ///
 /// `normalize` の閾値統合と同じ分割を、再埋め込みせず添字付きスコアから再現する
 /// (クラスタの分割のみを見るので代表語選定は不要)。
-fn connected_roots(num: usize, edges: &[(usize, usize, f32, bool)], threshold: f32) -> Vec<usize> {
+fn connected_roots(num: usize, edges: &[ScoredPair], threshold: f32) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..num).collect();
     fn find(parent: &mut [usize], x: usize) -> usize {
         let mut r = x;
@@ -378,40 +447,7 @@ pub fn evaluate_with_load(
 
     // --- 閾値スイープ (既定閾値以外の挙動) ---
     // 各閾値で分類 F1 とクラスタ F1 (推移閉包込み) を再埋め込みせず算出する。
-    let sweep = SWEEP_THRESHOLDS
-        .iter()
-        .map(|&t| {
-            let (mut stp, mut sfp, mut sfn) = (0usize, 0usize, 0usize);
-            for &(_, _, s, positive) in &scored {
-                match (positive, s >= t) {
-                    (true, true) => stp += 1,
-                    (false, true) => sfp += 1,
-                    (true, false) => sfn += 1,
-                    (false, false) => {}
-                }
-            }
-            let (_, _, class_f1) = prf(stp, sfp, sfn);
-
-            let roots = connected_roots(num, &scored, t);
-            let (mut ctp, mut cfp, mut cfn) = (0usize, 0usize, 0usize);
-            for &(i, j, _, positive) in &scored {
-                match (positive, roots[i] == roots[j]) {
-                    (true, true) => ctp += 1,
-                    (false, true) => cfp += 1,
-                    (true, false) => cfn += 1,
-                    (false, false) => {}
-                }
-            }
-            let (cp, cr, cluster_f1) = prf(ctp, cfp, cfn);
-            SweepRow {
-                threshold: t,
-                class_f1,
-                cluster_f1,
-                cluster_precision: cp,
-                cluster_recall: cr,
-            }
-        })
-        .collect();
+    let sweep = sweep_from_scored(num, &scored, SWEEP_THRESHOLDS);
 
     Ok(Benchmark {
         model: model.to_string(),
