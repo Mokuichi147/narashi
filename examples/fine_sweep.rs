@@ -17,6 +17,8 @@ fn main() -> Result<()> {
             "gte-multilingual-base",
         ),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
+        Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
+        Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),
         Some("paraphrase") => (
             EmbeddingModel::ParaphraseMLMiniLML12V2.into(),
             "paraphrase-MiniLM-L12",
