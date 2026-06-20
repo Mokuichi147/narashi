@@ -5,6 +5,7 @@
 //!
 //! ```sh
 //! cargo run --example benchmark                 # 既定モデル (gte-multilingual-base)
+//! cargo run --example benchmark -- distiluse    # distiluse-base-multilingual-cased-v2 (軽量代替)
 //! cargo run --example benchmark -- small        # multilingual-e5-small
 //! cargo run --example benchmark -- paraphrase   # paraphrase-multilingual
 //! cargo run --example benchmark -- mpnet        # paraphrase-mpnet-base
@@ -42,6 +43,10 @@ fn main() -> Result<()> {
         Some("gte") => (
             UserModel::GteMultilingualBase.into(),
             "gte-multilingual-base",
+        ),
+        Some("distiluse") => (
+            UserModel::DistiluseMultilingualV2.into(),
+            "distiluse-multilingual-v2",
         ),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
