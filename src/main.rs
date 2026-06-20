@@ -8,6 +8,8 @@ use std::path::PathBuf;
 enum ModelArg {
     /// gte-multilingual-base (既定・精度最良/clusterF1トップ・CJKに強い・768次元・約1.2GB)
     Gte,
+    /// distiluse-multilingual-v2 (gte に次ぐ精度を最小サイズで・高適合率・約0.54GB)
+    Distiluse,
     /// 多言語 E5 small (高適合率かつ最速級・軽量 約0.45GB)
     Small,
     /// 多言語 E5 large (E5系の上限・約8倍低速)
@@ -32,6 +34,7 @@ impl From<ModelArg> for Model {
             ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
             ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
             ModelArg::Gte => UserModel::GteMultilingualBase.into(),
+            ModelArg::Distiluse => UserModel::DistiluseMultilingualV2.into(),
         }
     }
 }

@@ -16,6 +16,10 @@ fn main() -> Result<()> {
             UserModel::GteMultilingualBase.into(),
             "gte-multilingual-base",
         ),
+        Some("distiluse") => (
+            UserModel::DistiluseMultilingualV2.into(),
+            "distiluse-multilingual-v2",
+        ),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
         Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
         Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),

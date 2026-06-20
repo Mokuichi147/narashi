@@ -91,6 +91,13 @@ pub enum UserModel {
     /// 日本語を含む CJK に強い多言語モデル(768次元・CLS プーリング)。
     /// E5 系の対抗候補。ONNX は単一ファイル(約 1.2GB)で外部重みを持たない。
     GteMultilingualBase,
+    /// distiluse-base-multilingual-cased-v2 (Xenova の ONNX)
+    ///
+    /// 50+ 言語対応の軽量多言語モデル(DistilBERT・Mean プーリング・768次元)。
+    /// ONNX は単一ファイル(約 0.54GB)で外部重みを持たない。gte に次ぐ精度
+    /// (clusterF1 ピーク 0.667 を既定閾値 70 で達成)を最小サイズ・最速級で得る
+    /// 軽量代替。詳細は `docs/benchmarks.md` を参照。
+    DistiluseMultilingualV2,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -162,6 +169,16 @@ fn model_spec(model: &Model) -> ModelSpec {
             source: ModelSource::UserDefined {
                 onnx_file: "onnx/model.onnx",
                 pooling: Pooling::Cls,
+            },
+        },
+        Model::UserDefined(UserModel::DistiluseMultilingualV2) => ModelSpec {
+            hf_repo: "Xenova/distiluse-base-multilingual-cased-v2",
+            query_prefix: "",
+            // ピーク clusterF1 を既定閾値 70 に合わせる校正値(ベンチで決定)
+            cos_baseline: 0.39,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model.onnx",
+                pooling: Pooling::Mean,
             },
         },
     }

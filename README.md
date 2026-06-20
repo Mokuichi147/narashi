@@ -8,7 +8,7 @@
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
 - **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
-- **モデル選択**: 既定の gte-multilingual-base は用語集ベンチマーク(日英中混在)で実運用挙動の clusterF1 が全候補中で最高(ピーク 0.682)かつ既定閾値ちょうどで高適合率(誤統合がほぼ無い)。軽量・最速を優先する場合は `--model small`、その他も `--model` で切替可能(モデル比較は [`docs/benchmarks.md`](docs/benchmarks.md))
+- **モデル選択**: 既定の gte-multilingual-base は用語集ベンチマーク(日英中混在)で実運用挙動の clusterF1 が全候補中で最高(ピーク 0.682)かつ既定閾値ちょうどで高適合率(誤統合がほぼ無い)。軽量・最速を優先する場合は精度の近い `--model distiluse`(約 0.54GB)や最軽量の `--model small`、その他も `--model` で切替可能(モデル比較は [`docs/benchmarks.md`](docs/benchmarks.md))
 
 ## インストール
 
@@ -49,7 +49,7 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | フラグ | 説明 | デフォルト |
 | --- | --- | --- |
 | `-t, --threshold <N>` | 類似度の閾値 (0〜100) | `70.0` |
-| `--model <MODEL>` | 埋め込みモデル (`gte` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q`) | `gte` |
+| `--model <MODEL>` | 埋め込みモデル (`gte` / `distiluse` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q`) | `gte` |
 | `--cache-dir <PATH>` | モデルキャッシュの保存先 | OS の TEMP フォルダ下 / `narashi` |
 | `-h, --help` | ヘルプ表示 | |
 
@@ -58,7 +58,8 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | 値 | モデル | 次元 | 特徴 |
 | --- | --- | ---: | --- |
 | `gte` | gte-multilingual-base | 768 | **既定**。精度最良(clusterF1 トップ 0.682・CJK に強い)。約 3 倍低速・1.2GB |
-| `small` | multilingual-e5-small | 384 | 高適合率・最速級・軽量(約 0.45GB)。速度/サイズ重視向け |
+| `distiluse` | distiluse-base-multilingual-cased-v2 | 768 | gte に次ぐ精度(0.667)を最小サイズ・最速級で。高適合率・約 0.54GB。軽量代替の第一候補 |
+| `small` | multilingual-e5-small | 384 | 最軽量・最保守(高適合率 0.971・約 0.45GB)。サイズ/速度を最優先する場合 |
 | `large` | multilingual-e5-large | 1024 | E5 系の上限(0.644)。約 8 倍低速で gte に劣後 |
 | `base` | multilingual-e5-base | 768 | small に劣後・非推奨 |
 | `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
