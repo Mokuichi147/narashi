@@ -6,9 +6,11 @@ use std::path::PathBuf;
 /// CLI から選択できる埋め込みモデル
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// 多言語 E5 small (既定・高精度かつ最速級・バランス重視)
+    /// gte-multilingual-base (既定・精度最良/clusterF1トップ・CJKに強い・768次元・約1.2GB)
+    Gte,
+    /// 多言語 E5 small (高適合率かつ最速級・軽量 約0.45GB)
     Small,
-    /// 多言語 E5 large (精度最優先・約6倍低速)
+    /// 多言語 E5 large (E5系の上限・約8倍低速)
     Large,
     /// 多言語 E5 base (small に劣後・非推奨)
     Base,
@@ -18,8 +20,6 @@ enum ModelArg {
     Mpnet,
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
     ParaphraseQ,
-    /// gte-multilingual-base (CJK に強い・768次元・要 高め閾値)
-    Gte,
 }
 
 impl From<ModelArg> for Model {
@@ -44,7 +44,7 @@ struct Cli {
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = ModelArg::Small)]
+    #[arg(long, value_enum, default_value_t = ModelArg::Gte)]
     model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)

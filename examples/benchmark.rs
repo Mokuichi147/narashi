@@ -4,11 +4,12 @@
 //! ベンチマークです。
 //!
 //! ```sh
-//! cargo run --example benchmark                 # 既定モデル (e5-small)
+//! cargo run --example benchmark                 # 既定モデル (gte-multilingual-base)
+//! cargo run --example benchmark -- small        # multilingual-e5-small
 //! cargo run --example benchmark -- paraphrase   # paraphrase-multilingual
 //! cargo run --example benchmark -- mpnet        # paraphrase-mpnet-base
 //! cargo run --example benchmark -- large        # e5-large
-//! cargo run --example benchmark -- gte          # gte-multilingual-base (ユーザー定義)
+//! cargo run --example benchmark -- gte          # gte-multilingual-base (既定・ユーザー定義)
 //! cargo run --example benchmark -- bge-zh       # 別系統: BGE 中国語特化
 //! cargo run --example benchmark -- all-minilm   # 別系統: 英語 MiniLM
 //! cargo run --example benchmark -- clip         # 別系統: CLIP テキスト
@@ -49,8 +50,12 @@ fn main() -> Result<()> {
             "all-MiniLM-L6-v2 (英語)",
         ),
         Some("clip") => (EmbeddingModel::ClipVitB32.into(), "clip-ViT-B-32-text"),
-        // 既定はライブラリの既定モデル (e5-small)
-        _ => (EmbeddingModel::MultilingualE5Small.into(), "e5-small"),
+        Some("small") => (EmbeddingModel::MultilingualE5Small.into(), "e5-small"),
+        // 既定はライブラリの既定モデル (gte-multilingual-base)
+        _ => (
+            UserModel::GteMultilingualBase.into(),
+            "gte-multilingual-base",
+        ),
     };
     let threshold = std::env::args()
         .nth(2)

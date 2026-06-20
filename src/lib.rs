@@ -3,7 +3,7 @@
 //!
 //! # 仕組み
 //!
-//! - **類似度判定**: 多言語埋め込みモデル(既定: `intfloat/multilingual-e5-small`)で
+//! - **類似度判定**: 多言語埋め込みモデル(既定: `Alibaba-NLP/gte-multilingual-base`)で
 //!   各テキストをベクトル化し、コサイン類似度をモデル固有のベースライン基準で
 //!   0〜100 スコアに校正(高帯域に偏るコサイン値を識別しやすいスケールへ展開)
 //! - **汎用性判定**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを
@@ -39,8 +39,8 @@
 //!
 //! # キャッシュ
 //!
-//! モデル・トークナイザは初回実行時に自動ダウンロードされます(約 500MB)。
-//! 保存先の優先順位は以下のとおり:
+//! モデル・トークナイザは初回実行時に自動ダウンロードされます(既定の gte は約 1.2GB、
+//! `--model small` なら約 0.45GB)。保存先の優先順位は以下のとおり:
 //!
 //! 1. [`Options::with_cache_dir`] による明示指定
 //! 2. 環境変数 [`CACHE_DIR_ENV`] (`NARASHI_CACHE_DIR`)
@@ -69,14 +69,16 @@ pub const DEFAULT_THRESHOLD: f32 = 70.0;
 
 pub mod eval;
 
-/// 既定の埋め込みモデル(multilingual-e5-small)
+/// 既定の埋め込みモデル(gte-multilingual-base)
 ///
-/// 用語集ベンチマーク(日本語・英語・中国語混在)で、既定閾値での適合率が非常に高く
-/// (誤統合がほぼ起きない)、最適閾値も既定値付近に収まる。表記ゆれ解消では
-/// 「異なる語を誤って統合する」方が「取りこぼし」より痛いため、保守的で安全な
-/// このモデルを既定とする。再現率を優先したい場合は `--model paraphrase` で
-/// paraphrase-multilingual-MiniLM-L12-v2 に切り替えられる。
-pub const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::MultilingualE5Small;
+/// 用語集ベンチマーク(日本語・英語・中国語混在)で、実運用挙動を表す clusterF1 が
+/// 全候補中で最高(ピーク 0.682)。しかもそのピークを既定閾値 [`DEFAULT_THRESHOLD`]
+/// ちょうどで、高い適合率(P=0.964 ≒ 誤統合がほぼ無い)を保ったまま達成する。
+/// 詳細な比較は `docs/benchmarks.md` を参照。
+///
+/// 速度・サイズ重視なら `--model small`(multilingual-e5-small, 約 0.45GB・最速級)へ、
+/// 高再現率重視なら `--model paraphrase` へ切り替えられる。
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::GteMultilingualBase);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
@@ -225,7 +227,7 @@ impl Options {
 
     /// 実際に使用する埋め込みモデルを解決する
     pub fn resolved_model(&self) -> Model {
-        self.model.clone().unwrap_or(Model::Builtin(DEFAULT_MODEL))
+        self.model.clone().unwrap_or(DEFAULT_MODEL)
     }
 
     /// 実際に使用するキャッシュパスを解決する
@@ -269,7 +271,7 @@ pub struct Narashi {
 impl Narashi {
     /// デフォルト設定で初期化する
     ///
-    /// 必要に応じてモデル・トークナイザをダウンロードします(初回のみ、約 500MB)。
+    /// 必要に応じてモデル・トークナイザをダウンロードします(初回のみ、既定の gte は約 1.2GB)。
     pub fn new() -> Result<Self> {
         Self::with_options(Options::default())
     }
@@ -549,10 +551,14 @@ mod tests {
     #[ignore]
     fn real_similarity_high() {
         let n = Narashi::new().unwrap();
-        let s = n.similarity("猫", "ネコ").unwrap();
-        // 校正後スケール: 関連の強い表記ゆれは非類似ペアより明確に高くなる
-        // (既定モデル paraphrase では「猫」⇔「ネコ」は ~95)
-        assert!(s > 80.0, "expected high similarity, got {s}");
+        // 校正後スケール: 関連の強い表記ゆれは無関係ペアより明確に高くなる。
+        // 既定モデル gte では「猫」⇔「ネコ」≒73、「猫」⇔「自動車」≒28 と大きく分離する。
+        let related = n.similarity("猫", "ネコ").unwrap();
+        let unrelated = n.similarity("猫", "自動車").unwrap();
+        assert!(
+            related > 60.0 && related > unrelated + 20.0,
+            "expected related ({related}) clearly above unrelated ({unrelated})"
+        );
     }
 
     #[test]
