@@ -16,3 +16,4 @@ tokenizers = { version = "0.20", default-features = false, features = ["http", "
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 hf-hub = "0.3"
+rayon = "1"

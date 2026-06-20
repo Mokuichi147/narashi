@@ -1,3 +1,5 @@
 /target
 /.fastembed_cache
-/.claude
+# .claude はローカル設定を無視しつつ、共有したいスキルだけ追跡する
+/.claude/*
+!/.claude/skills/
