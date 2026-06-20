@@ -49,7 +49,7 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | フラグ | 説明 | デフォルト |
 | --- | --- | --- |
 | `-t, --threshold <N>` | 類似度の閾値 (0〜100) | `70.0` |
-| `--model <MODEL>` | 埋め込みモデル (`small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q`) | `small` |
+| `--model <MODEL>` | 埋め込みモデル (`small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q` / `gte`) | `small` |
 | `--cache-dir <PATH>` | モデルキャッシュの保存先 | OS の TEMP フォルダ下 / `narashi` |
 | `-h, --help` | ヘルプ表示 | |
 
@@ -58,7 +58,8 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | 値 | モデル | 次元 | 特徴 |
 | --- | --- | ---: | --- |
 | `small` | multilingual-e5-small | 384 | **既定**。高適合率・最速級でバランス最良 |
-| `large` | multilingual-e5-large | 1024 | 精度最優先。僅差で最良だが約 6 倍低速 |
+| `gte` | gte-multilingual-base | 768 | **精度最良**(clusterF1 トップ・CJK に強い)。約 3 倍低速・1.2GB |
+| `large` | multilingual-e5-large | 1024 | E5 系の上限。約 6 倍低速で gte に劣後 |
 | `base` | multilingual-e5-base | 768 | small に劣後・非推奨 |
 | `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
 | `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | 再現率最優先。要 高め閾値(~87) |

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Narashi, Options};
+use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Model, Narashi, Options, UserModel};
 use std::path::PathBuf;
 
 /// CLI から選択できる埋め込みモデル
@@ -18,17 +18,20 @@ enum ModelArg {
     Mpnet,
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
     ParaphraseQ,
+    /// gte-multilingual-base (CJK に強い・768次元・要 高め閾値)
+    Gte,
 }
 
-impl From<ModelArg> for EmbeddingModel {
+impl From<ModelArg> for Model {
     fn from(m: ModelArg) -> Self {
         match m {
-            ModelArg::Small => EmbeddingModel::MultilingualE5Small,
-            ModelArg::Base => EmbeddingModel::MultilingualE5Base,
-            ModelArg::Large => EmbeddingModel::MultilingualE5Large,
-            ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2,
-            ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2,
-            ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q,
+            ModelArg::Small => EmbeddingModel::MultilingualE5Small.into(),
+            ModelArg::Base => EmbeddingModel::MultilingualE5Base.into(),
+            ModelArg::Large => EmbeddingModel::MultilingualE5Large.into(),
+            ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2.into(),
+            ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
+            ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
+            ModelArg::Gte => UserModel::GteMultilingualBase.into(),
         }
     }
 }
@@ -55,7 +58,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut opts = Options::new().with_model(cli.model.into());
+    let mut opts = Options::new().with_model(cli.model);
     if let Some(dir) = cli.cache_dir {
         opts = opts.with_cache_dir(dir);
     }

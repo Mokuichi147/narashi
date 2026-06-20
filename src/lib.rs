@@ -48,7 +48,10 @@
 
 use anyhow::{Result, anyhow};
 pub use fastembed::EmbeddingModel;
-use fastembed::{InitOptions, TextEmbedding};
+use fastembed::{
+    InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel,
+};
 use hf_hub::api::sync::ApiBuilder;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -75,12 +78,65 @@ pub mod eval;
 /// paraphrase-multilingual-MiniLM-L12-v2 に切り替えられる。
 pub const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::MultilingualE5Small;
 
+/// fastembed の組み込みカタログに無いユーザー定義モデル
+///
+/// fastembed の `try_new_from_user_defined` を使い、HF リポジトリの ONNX を
+/// 直接読み込んで利用する。組み込みモデルと同じ指標で比較するために用意している。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserModel {
+    /// Alibaba-NLP/gte-multilingual-base
+    ///
+    /// 日本語を含む CJK に強い多言語モデル(768次元・CLS プーリング)。
+    /// E5 系の対抗候補。ONNX は単一ファイル(約 1.2GB)で外部重みを持たない。
+    GteMultilingualBase,
+}
+
+/// narashi が利用できる埋め込みモデルの選択
+///
+/// fastembed の組み込みモデル([`EmbeddingModel`])と、HF リポジトリから直接読み込む
+/// [`UserModel`] の双方を統一的に扱う。`From<EmbeddingModel>` があるため
+/// `with_model(EmbeddingModel::...)` のように組み込みモデルを直接渡せる。
+#[derive(Debug, Clone)]
+pub enum Model {
+    /// fastembed の組み込みモデル
+    Builtin(EmbeddingModel),
+    /// HF リポジトリから読み込むユーザー定義モデル
+    UserDefined(UserModel),
+}
+
+impl From<EmbeddingModel> for Model {
+    fn from(m: EmbeddingModel) -> Self {
+        Model::Builtin(m)
+    }
+}
+
+impl From<UserModel> for Model {
+    fn from(m: UserModel) -> Self {
+        Model::UserDefined(m)
+    }
+}
+
+/// モデルの読み込み方法
+enum ModelSource {
+    /// fastembed の組み込みモデル。fastembed 自身が ONNX を取得・管理する。
+    Builtin(EmbeddingModel),
+    /// ユーザー定義モデル。`ModelSpec::hf_repo` から ONNX を直接読み込む。
+    UserDefined {
+        /// リポジトリ内の ONNX ファイルパス(例: `"onnx/model.onnx"`)
+        onnx_file: &'static str,
+        /// プーリング方式(モデル依存。E5/MiniLM は Mean、BGE/GTE は CLS)
+        pooling: Pooling,
+    },
+}
+
 /// モデルごとの取り扱いを記述したメタ情報
 ///
 /// モデルによって入力プレフィックスやコサイン類似度の分布が異なるため、
-/// トークナイザ取得元・プレフィックス・スコア校正のベースラインを切り替える。
+/// トークナイザ取得元・プレフィックス・スコア校正のベースライン・読み込み方法を
+/// 切り替える。
 struct ModelSpec {
     /// `tokenizer.json` を取得する Hugging Face リポジトリ ID
+    /// (ユーザー定義モデルでは ONNX の取得元も兼ねる)
     hf_repo: &'static str,
     /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
     query_prefix: &'static str,
@@ -88,63 +144,54 @@ struct ModelSpec {
     ///
     /// この値を 0、コサイン 1.0 を 100 に写像してスコアの識別力を高める。
     cos_baseline: f32,
+    /// ONNX の読み込み方法
+    source: ModelSource,
 }
 
 /// 指定モデルの取り扱いメタ情報を返す
-fn model_spec(model: &EmbeddingModel) -> ModelSpec {
+fn model_spec(model: &Model) -> ModelSpec {
     match model {
-        EmbeddingModel::MultilingualE5Small => ModelSpec {
-            hf_repo: "intfloat/multilingual-e5-small",
-            query_prefix: "query: ",
-            cos_baseline: 0.70,
-        },
-        EmbeddingModel::MultilingualE5Base => ModelSpec {
-            hf_repo: "intfloat/multilingual-e5-base",
-            query_prefix: "query: ",
-            cos_baseline: 0.70,
-        },
-        EmbeddingModel::MultilingualE5Large => ModelSpec {
-            hf_repo: "intfloat/multilingual-e5-large",
-            query_prefix: "query: ",
-            cos_baseline: 0.70,
-        },
-        EmbeddingModel::ParaphraseMLMiniLML12V2 | EmbeddingModel::ParaphraseMLMiniLML12V2Q => {
-            ModelSpec {
-                hf_repo: "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
-                query_prefix: "",
-                cos_baseline: 0.30,
-            }
-        }
-        EmbeddingModel::ParaphraseMLMpnetBaseV2 => ModelSpec {
-            hf_repo: "Xenova/paraphrase-multilingual-mpnet-base-v2",
+        Model::Builtin(m) => builtin_spec(m),
+        Model::UserDefined(UserModel::GteMultilingualBase) => ModelSpec {
+            hf_repo: "onnx-community/gte-multilingual-base",
+            // GTE は STS/類似度用途では指示プレフィックス無しの対称利用。
             query_prefix: "",
-            cos_baseline: 0.30,
+            cos_baseline: 0.42,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model.onnx",
+                pooling: Pooling::Cls,
+            },
         },
+    }
+}
+
+/// fastembed 組み込みモデルの取り扱いメタ情報を返す
+fn builtin_spec(model: &EmbeddingModel) -> ModelSpec {
+    let (hf_repo, query_prefix, cos_baseline) = match model {
+        EmbeddingModel::MultilingualE5Small => ("intfloat/multilingual-e5-small", "query: ", 0.70),
+        EmbeddingModel::MultilingualE5Base => ("intfloat/multilingual-e5-base", "query: ", 0.70),
+        EmbeddingModel::MultilingualE5Large => ("intfloat/multilingual-e5-large", "query: ", 0.70),
+        EmbeddingModel::ParaphraseMLMiniLML12V2 | EmbeddingModel::ParaphraseMLMiniLML12V2Q => {
+            ("Xenova/paraphrase-multilingual-MiniLM-L12-v2", "", 0.30)
+        }
+        EmbeddingModel::ParaphraseMLMpnetBaseV2 => {
+            ("Xenova/paraphrase-multilingual-mpnet-base-v2", "", 0.30)
+        }
         // --- 別系統モデル (比較用)。多言語特化ではないため精度比較のベースライン ---
         // BGE 中国語特化 (BAAI 系)。中国語には強いが日本語は学習外。
-        EmbeddingModel::BGESmallZHV15 => ModelSpec {
-            hf_repo: "Xenova/bge-small-zh-v1.5",
-            query_prefix: "",
-            cos_baseline: 0.30,
-        },
+        EmbeddingModel::BGESmallZHV15 => ("Xenova/bge-small-zh-v1.5", "", 0.30),
         // 英語 sentence-transformers (非多言語のベースライン)。
-        EmbeddingModel::AllMiniLML6V2 => ModelSpec {
-            hf_repo: "Qdrant/all-MiniLM-L6-v2-onnx",
-            query_prefix: "",
-            cos_baseline: 0.0,
-        },
+        EmbeddingModel::AllMiniLML6V2 => ("Qdrant/all-MiniLM-L6-v2-onnx", "", 0.0),
         // CLIP テキストエンコーダ (対照学習・全く別アーキテクチャ)。
-        EmbeddingModel::ClipVitB32 => ModelSpec {
-            hf_repo: "Qdrant/clip-ViT-B-32-text",
-            query_prefix: "",
-            cos_baseline: 0.0,
-        },
+        EmbeddingModel::ClipVitB32 => ("Qdrant/clip-ViT-B-32-text", "", 0.0),
         // 未対応モデルは E5 small 相当の保守的な既定で扱う
-        _ => ModelSpec {
-            hf_repo: "intfloat/multilingual-e5-small",
-            query_prefix: "query: ",
-            cos_baseline: 0.70,
-        },
+        _ => ("intfloat/multilingual-e5-small", "query: ", 0.70),
+    };
+    ModelSpec {
+        hf_repo,
+        query_prefix,
+        cos_baseline,
+        source: ModelSource::Builtin(model.clone()),
     }
 }
 
@@ -152,7 +199,7 @@ fn model_spec(model: &EmbeddingModel) -> ModelSpec {
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     cache_dir: Option<PathBuf>,
-    model: Option<EmbeddingModel>,
+    model: Option<Model>,
 }
 
 impl Options {
@@ -168,14 +215,17 @@ impl Options {
     }
 
     /// 使用する埋め込みモデルを指定する(未指定時は [`DEFAULT_MODEL`])
-    pub fn with_model(mut self, model: EmbeddingModel) -> Self {
-        self.model = Some(model);
+    ///
+    /// 組み込みモデル([`EmbeddingModel`])とユーザー定義モデル([`UserModel`])の
+    /// どちらも `Into<Model>` 経由で渡せる。
+    pub fn with_model(mut self, model: impl Into<Model>) -> Self {
+        self.model = Some(model.into());
         self
     }
 
     /// 実際に使用する埋め込みモデルを解決する
-    pub fn resolved_model(&self) -> EmbeddingModel {
-        self.model.clone().unwrap_or(DEFAULT_MODEL)
+    pub fn resolved_model(&self) -> Model {
+        self.model.clone().unwrap_or(Model::Builtin(DEFAULT_MODEL))
     }
 
     /// 実際に使用するキャッシュパスを解決する
@@ -232,14 +282,38 @@ impl Narashi {
         let model = opts.resolved_model();
         let spec = model_spec(&model);
 
-        let embedder =
-            TextEmbedding::try_new(InitOptions::new(model).with_cache_dir(cache_dir.clone()))?;
-
         let api = ApiBuilder::new()
-            .with_cache_dir(cache_dir)
+            .with_cache_dir(cache_dir.clone())
             .build()
             .map_err(|e| anyhow!("hf-hub init failed: {e}"))?;
         let repo = api.model(spec.hf_repo.to_string());
+
+        // 埋め込みモデルを読み込む。組み込みは fastembed が ONNX を管理し、
+        // ユーザー定義は hf_repo の ONNX を直接読み込む。
+        let embedder = match &spec.source {
+            ModelSource::Builtin(m) => TextEmbedding::try_new(
+                InitOptions::new(m.clone()).with_cache_dir(cache_dir.clone()),
+            )?,
+            ModelSource::UserDefined { onnx_file, pooling } => {
+                let fetch = |name: &str| -> Result<Vec<u8>> {
+                    let path = repo
+                        .get(name)
+                        .map_err(|e| anyhow!("{name} download failed: {e}"))?;
+                    Ok(std::fs::read(path)?)
+                };
+                let tokenizer_files = TokenizerFiles {
+                    tokenizer_file: fetch("tokenizer.json")?,
+                    config_file: fetch("config.json")?,
+                    special_tokens_map_file: fetch("special_tokens_map.json")?,
+                    tokenizer_config_file: fetch("tokenizer_config.json")?,
+                };
+                let user_model = UserDefinedEmbeddingModel::new(fetch(onnx_file)?, tokenizer_files)
+                    .with_pooling(pooling.clone());
+                TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::new())?
+            }
+        };
+
+        // 代表選出のトークン数計算に使う独立したトークナイザ(全モデル共通で hf_repo から)
         let tokenizer_path = repo
             .get("tokenizer.json")
             .map_err(|e| anyhow!("tokenizer download failed: {e}"))?;
