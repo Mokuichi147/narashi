@@ -11,10 +11,39 @@ narashi はコサイン類似度で表記ゆれを統合するため、埋め込
 
 ## 全体像
 
+0. 候補モデルのライセンスを確認する(寛容なライセンスのみ採用可)
 1. 用語集(正解データ)を必要に応じて拡張する
 2. 候補モデルをベンチマークで計測する(キャッシュに無いモデルは事前取得が必要)
 3. 指標を解釈して用途に合うモデルを選ぶ
 4. `docs/benchmarks.md` を更新し、必要なら `src/lib.rs` の既定を変更する
+
+## 0. ライセンスの確認 (候補に入れる前の必須チェック)
+
+narashi 本体は **MIT / Apache-2.0 のデュアルライセンス**。新しい候補モデルを評価対象に入れる前に、
+**原典の Hugging Face モデルカードでライセンスを確認**し、寛容なライセンス(Apache 2.0 / MIT)で
+**商用利用可・コピーレフトや非商用(NC)制限なし**のものだけを採用する。CC-BY-NC、GPL 系、独自の
+利用規約付き(Llama 系など)、ライセンス不明のモデルは原則採用しない。
+
+- narashi はモデル重みを**同梱せず実行時に Hugging Face からダウンロード**するため、リポジトリでの
+  重み再配布は発生しない。ただし利用者がそのモデルを使うことになるので、利用者にとって安全な
+  ライセンスであることを保証する。
+- ONNX 変換リポジトリ(`onnx-community/*`, `Xenova/*`, `Qdrant/*` 等)はモデルカードにライセンス
+  タグが無いことがある。その場合は**原典モデル**のライセンスを根拠とする(機械的変換は原典の
+  ライセンスが及ぶ)。原典が不明なものは採用しない。
+- 採用したら、原典リポジトリとライセンスを **`README.md` のライセンス節のモデル表**に追記する。
+
+現行モデルのライセンス(いずれも寛容):
+
+| `--model` | 原典 | ライセンス |
+| --- | --- | --- |
+| `gte`(既定) | Alibaba-NLP/gte-multilingual-base | Apache 2.0 |
+| `distiluse` | sentence-transformers/distiluse-base-multilingual-cased-v2 | Apache 2.0 |
+| `small` / `base` / `large` | intfloat/multilingual-e5-* | MIT |
+| `paraphrase` / `paraphrase-q` | sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | Apache 2.0 |
+| `mpnet` | sentence-transformers/paraphrase-multilingual-mpnet-base-v2 | Apache 2.0 |
+| `bge-zh`(比較用) | BAAI/bge-small-zh-v1.5 | MIT |
+| `all-minilm`(比較用) | sentence-transformers/all-MiniLM-L6-v2 | Apache 2.0 |
+| `clip`(比較用) | OpenAI CLIP (sentence-transformers/clip-ViT-B-32) | MIT |
 
 ## 1. 用語集 (正解データ)
 
@@ -109,6 +138,8 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 - 既定を変えるなら `src/lib.rs` の `DEFAULT_MODEL` を変更し、doc コメントの根拠も更新。
 - 新しい選択肢を CLI に出すなら `src/main.rs` の `ModelArg`、`examples/benchmark.rs` の match 分岐、
   `README.md` のモデル表を揃える。
+- 新しいモデルを採用したら、原典リポジトリとライセンスを **`README.md` のライセンス節のモデル表**にも
+  追記する(セクション 0 の確認結果を反映)。
 - 校正定数を変えたら `src/lib.rs` の `model_spec()` の `cos_baseline` を更新。
 
 ## これまでの結論 (2026-06 時点)

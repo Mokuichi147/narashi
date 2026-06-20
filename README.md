@@ -142,3 +142,17 @@ let n = Narashi::with_options(opts)?;
 
 - MIT License ([LICENSE-MIT](LICENSE-MIT))
 - Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+
+### 埋め込みモデルのライセンス
+
+narashi はモデルの重みを同梱せず、実行時に Hugging Face から各モデルをダウンロードします。各モデルはそれぞれの提供元のライセンス(いずれも Apache 2.0 または MIT の寛容なライセンス)に従います。利用にあたっては原典のライセンスをご確認ください。
+
+| `--model` | 原典 | ライセンス |
+| --- | --- | --- |
+| `gte`(既定) | [Alibaba-NLP/gte-multilingual-base](https://huggingface.co/Alibaba-NLP/gte-multilingual-base) | Apache 2.0 |
+| `distiluse` | [sentence-transformers/distiluse-base-multilingual-cased-v2](https://huggingface.co/sentence-transformers/distiluse-base-multilingual-cased-v2) | Apache 2.0 |
+| `small` | [intfloat/multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) | MIT |
+| `base` | [intfloat/multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base) | MIT |
+| `large` | [intfloat/multilingual-e5-large](https://huggingface.co/intfloat/multilingual-e5-large) | MIT |
+| `paraphrase` / `paraphrase-q` | [sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) | Apache 2.0 |
+| `mpnet` | [sentence-transformers/paraphrase-multilingual-mpnet-base-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-mpnet-base-v2) | Apache 2.0 |
