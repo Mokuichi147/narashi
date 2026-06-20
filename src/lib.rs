@@ -120,6 +120,25 @@ fn model_spec(model: &EmbeddingModel) -> ModelSpec {
             query_prefix: "",
             cos_baseline: 0.30,
         },
+        // --- 別系統モデル (比較用)。多言語特化ではないため精度比較のベースライン ---
+        // BGE 中国語特化 (BAAI 系)。中国語には強いが日本語は学習外。
+        EmbeddingModel::BGESmallZHV15 => ModelSpec {
+            hf_repo: "Xenova/bge-small-zh-v1.5",
+            query_prefix: "",
+            cos_baseline: 0.30,
+        },
+        // 英語 sentence-transformers (非多言語のベースライン)。
+        EmbeddingModel::AllMiniLML6V2 => ModelSpec {
+            hf_repo: "Qdrant/all-MiniLM-L6-v2-onnx",
+            query_prefix: "",
+            cos_baseline: 0.0,
+        },
+        // CLIP テキストエンコーダ (対照学習・全く別アーキテクチャ)。
+        EmbeddingModel::ClipVitB32 => ModelSpec {
+            hf_repo: "Qdrant/clip-ViT-B-32-text",
+            query_prefix: "",
+            cos_baseline: 0.0,
+        },
         // 未対応モデルは E5 small 相当の保守的な既定で扱う
         _ => ModelSpec {
             hf_repo: "intfloat/multilingual-e5-small",

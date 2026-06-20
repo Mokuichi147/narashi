@@ -136,6 +136,21 @@ pub struct Speed {
     pub term_count: usize,
 }
 
+/// 閾値スイープの 1 行 (ある閾値での分類 F1 とクラスタ F1)
+#[derive(Debug, Clone)]
+pub struct SweepRow {
+    /// この行の閾値
+    pub threshold: f32,
+    /// 分類 F1 (ペア単位、推移閉包なし)
+    pub class_f1: f64,
+    /// クラスタ F1 (`normalize` 相当の推移閉包込み)
+    pub cluster_f1: f64,
+    /// クラスタの適合率 (誤統合の少なさ)
+    pub cluster_precision: f64,
+    /// クラスタの再現率 (取りこぼしの少なさ)
+    pub cluster_recall: f64,
+}
+
 /// 1 モデル分のベンチマーク結果 (共通スペック)
 #[derive(Debug, Clone)]
 pub struct Benchmark {
@@ -144,7 +159,44 @@ pub struct Benchmark {
     pub classification: Classification,
     pub scan: ThresholdScan,
     pub clustering: Clustering,
+    /// 複数閾値での挙動 (既定閾値以外も含む)
+    pub sweep: Vec<SweepRow>,
     pub speed: Speed,
+}
+
+/// 既定でスイープする閾値 (50〜95 を 5 刻み)
+pub const SWEEP_THRESHOLDS: &[f32] = &[50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0];
+
+/// 全要素を独立成分とし、閾値以上のペアを連結した連結成分の代表を返す。
+///
+/// `normalize` の閾値統合と同じ分割を、再埋め込みせず添字付きスコアから再現する
+/// (クラスタの分割のみを見るので代表語選定は不要)。
+fn connected_roots(num: usize, edges: &[(usize, usize, f32, bool)], threshold: f32) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..num).collect();
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while parent[r] != r {
+            r = parent[r];
+        }
+        // 経路圧縮
+        let mut cur = x;
+        while parent[cur] != r {
+            let next = parent[cur];
+            parent[cur] = r;
+            cur = next;
+        }
+        r
+    }
+    for &(i, j, s, _) in edges {
+        if s >= threshold {
+            let ri = find(&mut parent, i);
+            let rj = find(&mut parent, j);
+            if ri != rj {
+                parent[ri] = rj;
+            }
+        }
+    }
+    (0..num).map(|x| find(&mut parent, x)).collect()
 }
 
 /// 2 つのカウントから precision/recall/f1 を計算する。
@@ -172,7 +224,12 @@ fn prf(tp: usize, fp: usize, fn_: usize) -> (f64, f64, f64) {
 /// `load_ms` を別途渡す代わりにモデルロードもここで計測したい場合は
 /// [`evaluate`] を、ロード時間を呼び出し側で計測したい場合は
 /// [`evaluate_with_load`] を使ってください。
-pub fn evaluate(n: &Narashi, glossary: &Glossary, threshold: f32, model: &str) -> Result<Benchmark> {
+pub fn evaluate(
+    n: &Narashi,
+    glossary: &Glossary,
+    threshold: f32,
+    model: &str,
+) -> Result<Benchmark> {
     evaluate_with_load(n, glossary, threshold, model, 0.0)
 }
 
@@ -192,8 +249,10 @@ pub fn evaluate_with_load(
     let embeddings = n.embed_normalized(&terms)?;
     let embed_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-    // --- 全ペアのスコアとラベル ---
-    let mut scored: Vec<(f32, bool)> = Vec::with_capacity(num * num / 2);
+    // --- 全ペアの (添字, スコア, ラベル) ---
+    // 添字を保持することで、任意の閾値でのクラスタリング (union-find) を
+    // 再埋め込みせずに算出できる (閾値スイープ用)。
+    let mut scored: Vec<(usize, usize, f32, bool)> = Vec::with_capacity(num * num / 2);
     let mut min_positive = f32::INFINITY;
     let mut max_negative = f32::NEG_INFINITY;
     for i in 0..num {
@@ -205,13 +264,13 @@ pub fn evaluate_with_load(
             } else {
                 max_negative = max_negative.max(s);
             }
-            scored.push((s, positive));
+            scored.push((i, j, s, positive));
         }
     }
 
     // --- 固定閾値での分類精度 ---
     let (mut tp, mut fp, mut tn, mut fn_) = (0usize, 0usize, 0usize, 0usize);
-    for &(s, positive) in &scored {
+    for &(_, _, s, positive) in &scored {
         match (positive, s >= threshold) {
             (true, true) => tp += 1,
             (false, true) => fp += 1,
@@ -239,7 +298,7 @@ pub fn evaluate_with_load(
     let mut cand = 0.0;
     while cand <= 100.0 {
         let (mut btp, mut bfp, mut bfn) = (0usize, 0usize, 0usize);
-        for &(s, positive) in &scored {
+        for &(_, _, s, positive) in &scored {
             match (positive, s >= cand) {
                 (true, true) => btp += 1,
                 (false, true) => bfp += 1,
@@ -317,19 +376,53 @@ pub fn evaluate_with_load(
         predicted_clusters: groups.len(),
     };
 
+    // --- 閾値スイープ (既定閾値以外の挙動) ---
+    // 各閾値で分類 F1 とクラスタ F1 (推移閉包込み) を再埋め込みせず算出する。
+    let sweep = SWEEP_THRESHOLDS
+        .iter()
+        .map(|&t| {
+            let (mut stp, mut sfp, mut sfn) = (0usize, 0usize, 0usize);
+            for &(_, _, s, positive) in &scored {
+                match (positive, s >= t) {
+                    (true, true) => stp += 1,
+                    (false, true) => sfp += 1,
+                    (true, false) => sfn += 1,
+                    (false, false) => {}
+                }
+            }
+            let (_, _, class_f1) = prf(stp, sfp, sfn);
+
+            let roots = connected_roots(num, &scored, t);
+            let (mut ctp, mut cfp, mut cfn) = (0usize, 0usize, 0usize);
+            for &(i, j, _, positive) in &scored {
+                match (positive, roots[i] == roots[j]) {
+                    (true, true) => ctp += 1,
+                    (false, true) => cfp += 1,
+                    (true, false) => cfn += 1,
+                    (false, false) => {}
+                }
+            }
+            let (cp, cr, cluster_f1) = prf(ctp, cfp, cfn);
+            SweepRow {
+                threshold: t,
+                class_f1,
+                cluster_f1,
+                cluster_precision: cp,
+                cluster_recall: cr,
+            }
+        })
+        .collect();
+
     Ok(Benchmark {
         model: model.to_string(),
         classification,
         scan,
         clustering,
+        sweep,
         speed: Speed {
             load_ms,
             embed_ms,
-            per_text_ms: if num == 0 {
-                0.0
-            } else {
-                embed_ms / num as f64
-            },
+            per_text_ms: if num == 0 { 0.0 } else { embed_ms / num as f64 },
             term_count: num,
         },
     })
@@ -370,7 +463,11 @@ impl fmt::Display for Benchmark {
             "  正例min={:.1}  負例max={:.1}  margin={:.1}",
             s.min_positive, s.max_negative, s.margin
         )?;
-        writeln!(f, "-- クラスタ一致度 (normalize, 閾値 {:.1}) --", cl.threshold)?;
+        writeln!(
+            f,
+            "-- クラスタ一致度 (normalize, 閾値 {:.1}) --",
+            cl.threshold
+        )?;
         writeln!(
             f,
             "  pairF1={:.3} (P={:.3} R={:.3})  完全一致グループ {}/{}  クラスタ数={}",
@@ -381,6 +478,19 @@ impl fmt::Display for Benchmark {
             cl.expected_groups,
             cl.predicted_clusters
         )?;
+        writeln!(f, "-- 閾値スイープ (分類F1 / クラスタF1 P R) --")?;
+        writeln!(f, "  閾値 |  分類F1 | クラスタF1 (   P  /   R  )")?;
+        for row in &self.sweep {
+            writeln!(
+                f,
+                "  {:>4.0} |  {:.3}  |   {:.3}   ( {:.3} / {:.3} )",
+                row.threshold,
+                row.class_f1,
+                row.cluster_f1,
+                row.cluster_precision,
+                row.cluster_recall
+            )?;
+        }
         writeln!(f, "-- 速度 --")?;
         write!(
             f,
