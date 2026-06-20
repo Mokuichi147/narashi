@@ -58,11 +58,22 @@ use tokenizers::Tokenizer;
 /// キャッシュ保存先を上書きするための環境変数名 (`NARASHI_CACHE_DIR`)
 pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
 
-/// 既定の埋め込みモデル(paraphrase-multilingual-MiniLM-L12-v2)
+/// 既定の統合閾値 (0〜100)
 ///
-/// E5 small と同規模(384次元/12層)ながら対称的な文類似度向けに学習されており、
-/// 日本語の短い表記ゆれ(例: 「猫」⇔「ネコ」)で E5 を大きく上回る識別力を示す。
-pub const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::ParaphraseMLMiniLML12V2;
+/// 既定モデルでこの値以上のスコアを持つペアが統合されます。CLI の `--threshold`
+/// 既定値および評価ベンチマークの基準として共有されます。
+pub const DEFAULT_THRESHOLD: f32 = 70.0;
+
+pub mod eval;
+
+/// 既定の埋め込みモデル(multilingual-e5-small)
+///
+/// 用語集ベンチマーク(日本語・英語・中国語混在)で、既定閾値での適合率が非常に高く
+/// (誤統合がほぼ起きない)、最適閾値も既定値付近に収まる。表記ゆれ解消では
+/// 「異なる語を誤って統合する」方が「取りこぼし」より痛いため、保守的で安全な
+/// このモデルを既定とする。再現率を優先したい場合は `--model paraphrase` で
+/// paraphrase-multilingual-MiniLM-L12-v2 に切り替えられる。
+pub const DEFAULT_MODEL: EmbeddingModel = EmbeddingModel::MultilingualE5Small;
 
 /// モデルごとの取り扱いを記述したメタ情報
 ///
@@ -237,7 +248,7 @@ impl Narashi {
     ///
     /// 正規化済みベクトル同士のコサイン類似度はドット積に一致するため、
     /// 以降のペア比較では平方根を伴う norm 再計算を省ける。
-    fn embed_normalized(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    pub(crate) fn embed_normalized(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let inputs: Vec<String> = texts
             .iter()
             .map(|t| format!("{}{}", self.query_prefix, t))
@@ -248,7 +259,7 @@ impl Narashi {
     }
 
     /// コサイン類似度を 0〜100 のスコアへ校正する(モデル依存のベースライン基準)
-    fn score(&self, cos: f32) -> f32 {
+    pub(crate) fn score(&self, cos: f32) -> f32 {
         ((cos - self.cos_baseline) / (1.0 - self.cos_baseline)).clamp(0.0, 1.0) * 100.0
     }
 
@@ -332,7 +343,7 @@ fn normalize_l2(v: &mut [f32]) {
 }
 
 /// 内積を返す。L2 正規化済みベクトル同士ではコサイン類似度に一致する。
-fn dot(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 

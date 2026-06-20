@@ -1,19 +1,23 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use narashi::{EmbeddingModel, Group, Narashi, Options};
+use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Narashi, Options};
 use std::path::PathBuf;
 
 /// CLI から選択できる埋め込みモデル
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// paraphrase-multilingual-MiniLM-L12-v2 (既定・対称類似度向け)
+    /// 多言語 E5 small (既定・高精度かつ最速級・バランス重視)
+    Small,
+    /// 多言語 E5 large (精度最優先・約6倍低速)
+    Large,
+    /// 多言語 E5 base (small に劣後・非推奨)
+    Base,
+    /// paraphrase-multilingual-MiniLM-L12-v2 (高再現率・要 高め閾値)
     Paraphrase,
+    /// paraphrase-multilingual-mpnet-base-v2 (再現率最優先・要 高め閾値)
+    Mpnet,
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
     ParaphraseQ,
-    /// 多言語 E5 small (検索向けチューニング・同規模)
-    Small,
-    /// 多言語 E5 base (高次元・低速)
-    Base,
 }
 
 impl From<ModelArg> for EmbeddingModel {
@@ -21,7 +25,9 @@ impl From<ModelArg> for EmbeddingModel {
         match m {
             ModelArg::Small => EmbeddingModel::MultilingualE5Small,
             ModelArg::Base => EmbeddingModel::MultilingualE5Base,
+            ModelArg::Large => EmbeddingModel::MultilingualE5Large,
             ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2,
+            ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2,
             ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q,
         }
     }
@@ -31,11 +37,11 @@ impl From<ModelArg> for EmbeddingModel {
 #[command(name = "narashi", about = "表記ゆれ解消ツール")]
 struct Cli {
     /// 類似度の閾値 (0-100)
-    #[arg(short, long, default_value_t = 70.0)]
+    #[arg(short, long, default_value_t = DEFAULT_THRESHOLD)]
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = ModelArg::Paraphrase)]
+    #[arg(long, value_enum, default_value_t = ModelArg::Small)]
     model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
