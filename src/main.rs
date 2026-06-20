@@ -1,14 +1,16 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Narashi, Options};
+use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Model, Narashi, Options, UserModel};
 use std::path::PathBuf;
 
 /// CLI から選択できる埋め込みモデル
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// 多言語 E5 small (既定・高精度かつ最速級・バランス重視)
+    /// gte-multilingual-base (既定・精度最良/clusterF1トップ・CJKに強い・768次元・約1.2GB)
+    Gte,
+    /// 多言語 E5 small (高適合率かつ最速級・軽量 約0.45GB)
     Small,
-    /// 多言語 E5 large (精度最優先・約6倍低速)
+    /// 多言語 E5 large (E5系の上限・約8倍低速)
     Large,
     /// 多言語 E5 base (small に劣後・非推奨)
     Base,
@@ -20,15 +22,16 @@ enum ModelArg {
     ParaphraseQ,
 }
 
-impl From<ModelArg> for EmbeddingModel {
+impl From<ModelArg> for Model {
     fn from(m: ModelArg) -> Self {
         match m {
-            ModelArg::Small => EmbeddingModel::MultilingualE5Small,
-            ModelArg::Base => EmbeddingModel::MultilingualE5Base,
-            ModelArg::Large => EmbeddingModel::MultilingualE5Large,
-            ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2,
-            ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2,
-            ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q,
+            ModelArg::Small => EmbeddingModel::MultilingualE5Small.into(),
+            ModelArg::Base => EmbeddingModel::MultilingualE5Base.into(),
+            ModelArg::Large => EmbeddingModel::MultilingualE5Large.into(),
+            ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2.into(),
+            ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
+            ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
+            ModelArg::Gte => UserModel::GteMultilingualBase.into(),
         }
     }
 }
@@ -41,7 +44,7 @@ struct Cli {
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = ModelArg::Small)]
+    #[arg(long, value_enum, default_value_t = ModelArg::Gte)]
     model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
@@ -55,7 +58,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut opts = Options::new().with_model(cli.model.into());
+    let mut opts = Options::new().with_model(cli.model);
     if let Some(dir) = cli.cache_dir {
         opts = opts.with_cache_dir(dir);
     }

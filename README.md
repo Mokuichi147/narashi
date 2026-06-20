@@ -4,11 +4,11 @@
 
 ## 仕組み
 
-- **類似度判定**: 多言語埋め込みモデル(既定: `multilingual-e5-small`)でベクトル化し、コサイン類似度を**モデル固有のベースライン基準で 0〜100 スコアに校正**(高帯域に偏りがちなコサイン値を識別しやすいスケールへ展開)
+- **類似度判定**: 多言語埋め込みモデル(既定: `gte-multilingual-base`)でベクトル化し、コサイン類似度を**モデル固有のベースライン基準で 0〜100 スコアに校正**(高帯域に偏りがちなコサイン値を識別しやすいスケールへ展開)
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
 - **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
-- **モデル選択**: 既定の E5 small は用語集ベンチマーク(日英中混在)で既定閾値の適合率が最高(誤統合がほぼ無い)かつ最速級。再現率や精度を優先する場合は `--model` で切替も可能(モデル比較は [`docs/benchmarks.md`](docs/benchmarks.md))
+- **モデル選択**: 既定の gte-multilingual-base は用語集ベンチマーク(日英中混在)で実運用挙動の clusterF1 が全候補中で最高(ピーク 0.682)かつ既定閾値ちょうどで高適合率(誤統合がほぼ無い)。軽量・最速を優先する場合は `--model small`、その他も `--model` で切替可能(モデル比較は [`docs/benchmarks.md`](docs/benchmarks.md))
 
 ## インストール
 
@@ -49,7 +49,7 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | フラグ | 説明 | デフォルト |
 | --- | --- | --- |
 | `-t, --threshold <N>` | 類似度の閾値 (0〜100) | `70.0` |
-| `--model <MODEL>` | 埋め込みモデル (`small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q`) | `small` |
+| `--model <MODEL>` | 埋め込みモデル (`gte` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q`) | `gte` |
 | `--cache-dir <PATH>` | モデルキャッシュの保存先 | OS の TEMP フォルダ下 / `narashi` |
 | `-h, --help` | ヘルプ表示 | |
 
@@ -57,8 +57,9 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
 | 値 | モデル | 次元 | 特徴 |
 | --- | --- | ---: | --- |
-| `small` | multilingual-e5-small | 384 | **既定**。高適合率・最速級でバランス最良 |
-| `large` | multilingual-e5-large | 1024 | 精度最優先。僅差で最良だが約 6 倍低速 |
+| `gte` | gte-multilingual-base | 768 | **既定**。精度最良(clusterF1 トップ 0.682・CJK に強い)。約 3 倍低速・1.2GB |
+| `small` | multilingual-e5-small | 384 | 高適合率・最速級・軽量(約 0.45GB)。速度/サイズ重視向け |
+| `large` | multilingual-e5-large | 1024 | E5 系の上限(0.644)。約 8 倍低速で gte に劣後 |
 | `base` | multilingual-e5-base | 768 | small に劣後・非推奨 |
 | `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
 | `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | 再現率最優先。要 高め閾値(~87) |
@@ -118,8 +119,8 @@ for g in &groups {
 ```rust
 use narashi::{EmbeddingModel, Narashi, Options};
 
-// 既定は multilingual-e5-small。精度最優先で E5 large へ切り替える例:
-let opts = Options::new().with_model(EmbeddingModel::MultilingualE5Large);
+// 既定は gte-multilingual-base(精度最良)。軽量・最速の E5 small へ切り替える例:
+let opts = Options::new().with_model(EmbeddingModel::MultilingualE5Small);
 let n = Narashi::with_options(opts)?;
 ```
 
