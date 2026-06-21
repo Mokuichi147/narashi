@@ -1,7 +1,8 @@
 # crates.io への公開ワークフロー(タグ駆動)
 #
 # `v<バージョン>` 形式のタグ(例: v0.2.0)を push すると、タグと Cargo.toml の
-# バージョン一致を検証し、テストを実行したうえで `cargo publish` を行う。
+# バージョン一致を検証し、テストを実行したうえで `cargo publish` を行い、
+# 続けて前回リリースからの変更点を載せた GitHub Release を作成する。
 #
 # 事前準備: リポジトリの Settings > Secrets に `CARGO_REGISTRY_TOKEN`
 #           (crates.io の API トークン)を登録しておくこと。
@@ -17,7 +18,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -46,3 +47,13 @@ jobs:
 
       - name: Publish to crates.io
         run: cargo publish --locked --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # --generate-notes で前回のリリース(タグ)からの変更点を自動生成して本文にする
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes
