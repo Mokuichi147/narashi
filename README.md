@@ -8,12 +8,14 @@
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
 - **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
-- **モデル選択**: 既定の gte-multilingual-base は用語集ベンチマーク(日英中混在)で実運用挙動の clusterF1 が全候補中で最高(ピーク 0.682)かつ既定閾値ちょうどで高適合率(誤統合がほぼ無い)。軽量・最速を優先する場合は精度の近い `--model distiluse`(約 0.54GB)や最軽量の `--model small`、その他も `--model` で切替可能(モデル比較は [`docs/benchmarks.md`](docs/benchmarks.md))
+- **モデル選択**: 既定は用語集ベンチマーク(日英中混在)で最も精度が高く誤統合が少ない `gte-multilingual-base`。軽量・最速を優先する場合は `--model` で他モデルに切替可能(選択肢は下の[オプション](#オプション)表、詳細な比較は [`docs/benchmarks.md`](docs/benchmarks.md))
 
 ## インストール
 
+[crates.io](https://crates.io/crates/narashi) からインストール:
+
 ```sh
-cargo install --path .
+cargo install narashi
 ```
 
 ## CLI 使用方法
@@ -57,10 +59,10 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
 | 値 | モデル | 次元 | 特徴 |
 | --- | --- | ---: | --- |
-| `gte` | gte-multilingual-base | 768 | **既定**。精度最良(clusterF1 トップ 0.682・CJK に強い)。約 3 倍低速・1.2GB |
-| `distiluse` | distiluse-base-multilingual-cased-v2 | 768 | gte に次ぐ精度(0.667)を最小サイズ・最速級で。高適合率・約 0.54GB。軽量代替の第一候補 |
-| `small` | multilingual-e5-small | 384 | 最軽量・最保守(高適合率 0.971・約 0.45GB)。サイズ/速度を最優先する場合 |
-| `large` | multilingual-e5-large | 1024 | E5 系の上限(0.644)。約 8 倍低速で gte に劣後 |
+| `gte` | gte-multilingual-base | 768 | **既定**。精度最良で CJK に強い。やや低速・約 1.2GB |
+| `distiluse` | distiluse-base-multilingual-cased-v2 | 768 | gte に次ぐ精度を最小サイズ・最速級で。高適合率・約 0.54GB。軽量代替の第一候補 |
+| `small` | multilingual-e5-small | 384 | 最軽量・最保守(高適合率・約 0.45GB)。サイズ/速度を最優先する場合 |
+| `large` | multilingual-e5-large | 1024 | E5 系で最高精度だが約 8 倍低速で gte に劣後 |
 | `base` | multilingual-e5-base | 768 | small に劣後・非推奨 |
 | `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
 | `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | 再現率最優先。要 高め閾値(~87) |
@@ -75,13 +77,30 @@ $ narashi "テキスト1" "テキスト2"
 
 優先順位は **コマンドラインフラグ > 環境変数 > デフォルト(TEMP)** の順です。
 
+### ダウンロードしたモデルの削除
+
+モデルはキャッシュディレクトリ以下に保存されます(初回利用時に Hugging Face から自動ダウンロード)。
+不要になったら、そのディレクトリを削除すれば再ダウンロード前の状態に戻せます。
+
+```sh
+# デフォルト(OS の TEMP フォルダ下)の場合 — すべてのモデルを削除
+$ rm -rf "$(dirname "$(mktemp -u)")/narashi"
+
+# キャッシュ位置を指定している場合は、そのディレクトリを削除
+$ rm -rf "$NARASHI_CACHE_DIR"          # 環境変数で指定したとき
+$ rm -rf /path/to/cache                # --cache-dir で指定したとき
+```
+
+キャッシュ内はモデルごとにサブフォルダ(`models--…` 形式)に分かれているため、特定のモデルだけ削除したい場合は
+該当サブフォルダのみを消すこともできます。
+
 ## クレート経由での使用
 
 `Cargo.toml` に追加:
 
 ```toml
 [dependencies]
-narashi = { git = "https://github.com/mokuichi147/narashi" }
+narashi = "0.2"
 ```
 
 ### 類似度の算出
