@@ -12,8 +12,10 @@
 
 ## インストール
 
+[crates.io](https://crates.io/crates/narashi) からインストール:
+
 ```sh
-cargo install --path .
+cargo install narashi
 ```
 
 ## CLI 使用方法
@@ -81,7 +83,7 @@ $ narashi "テキスト1" "テキスト2"
 
 ```toml
 [dependencies]
-narashi = { git = "https://github.com/mokuichi147/narashi" }
+narashi = "0.2"
 ```
 
 ### 類似度の算出
