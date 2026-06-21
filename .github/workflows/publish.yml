@@ -4,8 +4,9 @@
 # バージョン一致を検証し、テストを実行したうえで `cargo publish` を行い、
 # 続けて前回リリースからの変更点を載せた GitHub Release を作成する。
 #
-# 事前準備: リポジトリの Settings > Secrets に `CARGO_REGISTRY_TOKEN`
-#           (crates.io の API トークン)を登録しておくこと。
+# 事前準備: GitHub の Environment `crates-io` に Secret `CARGO_REGISTRY_TOKEN`
+#           (crates.io の API トークン)を登録しておくこと。Environment の
+#           保護ルール(必須レビュー等)を設定すれば公開前の承認も挟める。
 #
 # 公開手順の例:
 #   1. Cargo.toml の version を更新してコミット・push
@@ -23,6 +24,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/narashi
     steps:
       - uses: actions/checkout@v4
 
