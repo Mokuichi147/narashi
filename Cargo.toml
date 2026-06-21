@@ -1,6 +1,6 @@
 [package]
 name = "narashi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -12,8 +12,8 @@ categories = ["text-processing", "command-line-utilities"]
 
 [dependencies]
 fastembed = "4"
-tokenizers = { version = "0.20", default-features = false, features = ["http", "onig"] }
+tokenizers = { version = "0.21", default-features = false, features = ["http", "onig"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-hf-hub = "0.3"
+hf-hub = "0.4"
 rayon = "1"
