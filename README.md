@@ -1,5 +1,8 @@
 # narashi
 
+![Crates.io License](https://img.shields.io/crates/l/narashi?cacheSeconds=0)
+![Crates.io Version](https://img.shields.io/crates/v/narashi?cacheSeconds=0)
+
 2つのテキストの類似度を数値化し、類似している場合はより汎用的な表記に統合することで表記ゆれを解消する Rust 製ツール・ライブラリ。
 
 ## 仕組み
