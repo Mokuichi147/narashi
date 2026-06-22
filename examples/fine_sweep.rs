@@ -20,6 +20,22 @@ fn main() -> Result<()> {
             UserModel::DistiluseMultilingualV2.into(),
             "distiluse-multilingual-v2",
         ),
+        Some("granite-97m-r2") => (
+            UserModel::GraniteMultilingual97mR2.into(),
+            "granite-97m-multilingual-r2",
+        ),
+        Some("granite-107m") => (
+            UserModel::GraniteMultilingual107m.into(),
+            "granite-107m-multilingual",
+        ),
+        Some("granite-278m") => (
+            UserModel::GraniteMultilingual278m.into(),
+            "granite-278m-multilingual",
+        ),
+        Some("granite-311m-r2") => (
+            UserModel::GraniteMultilingual311mR2.into(),
+            "granite-311m-multilingual-r2",
+        ),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
         Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
         Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),
@@ -38,7 +54,7 @@ fn main() -> Result<()> {
     let rows = sweep(&n, &glossary, &thresholds)?;
 
     println!("== fine sweep: {label} ==");
-    println!("閾値 | クラスタF1 (   P  /   R  ) | 分類F1");
+    println!("閾値 | クラスタF1 (   P  /   R  ) | 分類F1 | 誤統合");
     let mut best = (0.0_f64, 0.0_f32);
     for r in &rows {
         if r.cluster_f1 > best.0 {
@@ -52,8 +68,14 @@ fn main() -> Result<()> {
             ""
         };
         println!(
-            "{:>4.0} |   {:.3}   ( {:.3} / {:.3} ) | {:.3}{}",
-            r.threshold, r.cluster_f1, r.cluster_precision, r.cluster_recall, r.class_f1, mark
+            "{:>4.0} |   {:.3}   ( {:.3} / {:.3} ) | {:.3} | {:>5}{}",
+            r.threshold,
+            r.cluster_f1,
+            r.cluster_precision,
+            r.cluster_recall,
+            r.class_f1,
+            r.false_merges,
+            mark
         );
     }
     println!("peak clusterF1 = {:.3} @ 閾値 {:.0}", best.0, best.1);

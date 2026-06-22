@@ -5,6 +5,7 @@
 //!
 //! ```sh
 //! cargo run --example benchmark                 # 既定モデル (gte-multilingual-base)
+//! cargo run --example benchmark -- granite-278m # granite-278m-multilingual (clusterF1最高・誤統合多め)
 //! cargo run --example benchmark -- distiluse    # distiluse-base-multilingual-cased-v2 (軽量代替)
 //! cargo run --example benchmark -- small        # multilingual-e5-small
 //! cargo run --example benchmark -- paraphrase   # paraphrase-multilingual
@@ -47,6 +48,22 @@ fn main() -> Result<()> {
         Some("distiluse") => (
             UserModel::DistiluseMultilingualV2.into(),
             "distiluse-multilingual-v2",
+        ),
+        Some("granite-97m-r2") => (
+            UserModel::GraniteMultilingual97mR2.into(),
+            "granite-97m-multilingual-r2",
+        ),
+        Some("granite-107m") => (
+            UserModel::GraniteMultilingual107m.into(),
+            "granite-107m-multilingual",
+        ),
+        Some("granite-278m") => (
+            UserModel::GraniteMultilingual278m.into(),
+            "granite-278m-multilingual",
+        ),
+        Some("granite-311m-r2") => (
+            UserModel::GraniteMultilingual311mR2.into(),
+            "granite-311m-multilingual-r2",
         ),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
