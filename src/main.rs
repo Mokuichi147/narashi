@@ -6,9 +6,11 @@ use std::path::PathBuf;
 /// CLI から選択できる埋め込みモデル
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// gte-multilingual-base (既定・誤統合最小/最高適合率・CJKに強い・768次元・約1.2GB)
+    /// bge-m3 (既定・clusterF1最高0.725で誤統合も最小・1024次元・約1.06GB・約3倍低速)
+    BgeM3,
+    /// gte-multilingual-base (高適合率・CJKに強い・速度重視の代替・768次元・約1.2GB)
     Gte,
-    /// granite-278m-multilingual (clusterF1最高だが誤統合が多め・日本語明示学習・768次元・約1.1GB)
+    /// granite-278m-multilingual (clusterF1高め0.705だが誤統合が多め・日本語明示学習・768次元・約1.1GB)
     Granite,
     /// distiluse-multilingual-v2 (軽量代替・高適合率・約0.54GB)
     Distiluse,
@@ -35,6 +37,7 @@ impl From<ModelArg> for Model {
             ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2.into(),
             ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
             ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
+            ModelArg::BgeM3 => UserModel::BgeM3.into(),
             ModelArg::Gte => UserModel::GteMultilingualBase.into(),
             ModelArg::Granite => UserModel::GraniteMultilingual278m.into(),
             ModelArg::Distiluse => UserModel::DistiluseMultilingualV2.into(),
@@ -50,7 +53,7 @@ struct Cli {
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = ModelArg::Gte)]
+    #[arg(long, value_enum, default_value_t = ModelArg::BgeM3)]
     model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
