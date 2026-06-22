@@ -4,8 +4,10 @@
 //! ベンチマークです。
 //!
 //! ```sh
-//! cargo run --example benchmark                 # 既定モデル (gte-multilingual-base)
-//! cargo run --example benchmark -- granite-278m # granite-278m-multilingual (clusterF1最高・誤統合多め)
+//! cargo run --example benchmark                 # 既定モデル (bge-m3)
+//! cargo run --example benchmark -- bge-m3       # bge-m3 (既定・clusterF1最高0.725・誤統合最小)
+//! cargo run --example benchmark -- gte          # gte-multilingual-base (速度重視の代替)
+//! cargo run --example benchmark -- granite-278m # granite-278m-multilingual (clusterF1高め・誤統合多め)
 //! cargo run --example benchmark -- distiluse    # distiluse-base-multilingual-cased-v2 (軽量代替)
 //! cargo run --example benchmark -- small        # multilingual-e5-small
 //! cargo run --example benchmark -- paraphrase   # paraphrase-multilingual
@@ -65,6 +67,11 @@ fn main() -> Result<()> {
             UserModel::GraniteMultilingual311mR2.into(),
             "granite-311m-multilingual-r2",
         ),
+        Some("bge-m3") => (UserModel::BgeM3.into(), "bge-m3"),
+        Some("arctic-l") => (
+            UserModel::ArcticEmbedLV2.into(),
+            "snowflake-arctic-embed-l-v2.0",
+        ),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
         Some("all-minilm") => (
@@ -73,11 +80,8 @@ fn main() -> Result<()> {
         ),
         Some("clip") => (EmbeddingModel::ClipVitB32.into(), "clip-ViT-B-32-text"),
         Some("small") => (EmbeddingModel::MultilingualE5Small.into(), "e5-small"),
-        // 既定はライブラリの既定モデル (gte-multilingual-base)
-        _ => (
-            UserModel::GteMultilingualBase.into(),
-            "gte-multilingual-base",
-        ),
+        // 既定はライブラリの既定モデル (bge-m3)
+        _ => (UserModel::BgeM3.into(), "bge-m3"),
     };
     let threshold = std::env::args()
         .nth(2)

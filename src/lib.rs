@@ -3,7 +3,7 @@
 //!
 //! # 仕組み
 //!
-//! - **類似度判定**: 多言語埋め込みモデル(既定: `Alibaba-NLP/gte-multilingual-base`)で
+//! - **類似度判定**: 多言語埋め込みモデル(既定: `BAAI/bge-m3`)で
 //!   各テキストをベクトル化し、コサイン類似度をモデル固有のベースライン基準で
 //!   0〜100 スコアに校正(高帯域に偏るコサイン値を識別しやすいスケールへ展開)
 //! - **汎用性判定**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを
@@ -39,7 +39,7 @@
 //!
 //! # キャッシュ
 //!
-//! モデル・トークナイザは初回実行時に自動ダウンロードされます(既定の gte は約 1.2GB、
+//! モデル・トークナイザは初回実行時に自動ダウンロードされます(既定の bge-m3 は約 1.06GB、
 //! `--model small` なら約 0.45GB)。保存先の優先順位は以下のとおり:
 //!
 //! 1. [`Options::with_cache_dir`] による明示指定
@@ -69,21 +69,19 @@ pub const DEFAULT_THRESHOLD: f32 = 70.0;
 
 pub mod eval;
 
-/// 既定の埋め込みモデル(gte-multilingual-base)
+/// 既定の埋め込みモデル(bge-m3)
 ///
-/// 用語集ベンチマーク(日本語・英語・中国語混在)で、ピーク時の適合率が全モデル中で
-/// 最も高い(P=0.782、素ペア分類では誤統合 2 件・P=0.964)。表記ゆれ統合では
-/// 「異なる語を誤って統合する(=データ破壊)」が取りこぼしより痛いため、誤統合の
-/// 少なさを最優先して既定に据える。clusterF1 真ピークは 0.682 を既定閾値
-/// [`DEFAULT_THRESHOLD`] ちょうどで達成する。
+/// 用語集ベンチマーク(日本語・英語・中国語混在)で **clusterF1 真ピーク 0.725 が
+/// 全モデル中で最高**、かつピーク時適合率 P=0.983・誤統合わずか 1 件と**最も誤統合が
+/// 少ない**。精度(clusterF1)・誤統合の少なさ・サイズ(約 1.06GB)のすべてで従来既定の
+/// gte(0.682 / 誤統合 17 件 / 1.2GB)を上回る。校正(`cos_baseline=0.072`)により
+/// clusterF1 真ピークを既定閾値 [`DEFAULT_THRESHOLD`] ちょうどで達成する。
 ///
-/// なお clusterF1 真ピーク自体は granite-278m(0.705)の方が高いが、閾値 70 での
-/// 誤統合が gte の約 10 倍(19 件)で「猫=犬」のようなデータ破壊型の誤りが増えるため
-/// 既定には採用しない(`--model granite` で選択可)。詳細は `docs/benchmarks.md` を参照。
-///
-/// 速度・サイズ重視なら `--model distiluse`(約 0.54GB)/ `--model small`(約 0.45GB)へ、
-/// 高再現率重視なら `--model paraphrase` へ切り替えられる。
-pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::GteMultilingualBase);
+/// 唯一の弱点は推論速度で、1024次元 + fp16(CPU)のため gte の約 3 倍(≈16ms/語)。
+/// バッチ用途では問題にならないが、速度重視なら `--model gte`(約 1/3 の推論時間・
+/// clusterF1 0.682)へ、軽量重視なら `--model distiluse`(約 0.54GB)/ `--model small`
+/// (約 0.45GB)へ切り替えられる。詳細は `docs/benchmarks.md` を参照。
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
@@ -123,6 +121,20 @@ pub enum UserModel {
     /// IBM Granite Embedding R2(最新世代)の標準版(768次元・CLS プーリング)。
     /// 200+ 言語対応で日本語は明示的な学習対象。ONNX は単一ファイル(約 1.25GB)。
     GraniteMultilingual311mR2,
+    /// BAAI/bge-m3 (Xenova の fp16 ONNX)— **既定モデル** ([`DEFAULT_MODEL`])
+    ///
+    /// XLM-RoBERTa-large 系の高性能多言語モデル(1024次元・CLS プーリング・MIT)。
+    /// 100+ 言語対応で日本語も対象。外部重み付き fp32 は単一ファイル化できないが、
+    /// fp16 版は単一ファイル(約 1.06GB)で `commit_from_memory` 経由で読める。
+    /// clusterF1 真ピーク 0.725(全モデル中最高)を誤統合 1 件・P=0.983 で達成し、
+    /// 精度・誤統合の少なさ・サイズで gte を上回る。推論は gte の約 3 倍(≈16ms/語)。
+    BgeM3,
+    /// Snowflake/snowflake-arctic-embed-l-v2.0 (fp16 ONNX)
+    ///
+    /// BGE-M3 系を検索向けに再学習した大型モデル(1024次元・CLS プーリング・Apache 2.0)。
+    /// 74 言語対応。fp16 版が単一ファイル(約 1.06GB)。検索特化のため対称類似度では
+    /// 同系 arctic-m-v2.0 同様に振るわない可能性があるが、大型枠の確認として評価する。
+    ArcticEmbedLV2,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -245,6 +257,27 @@ fn model_spec(model: &Model) -> ModelSpec {
                 pooling: Pooling::Cls,
             },
         },
+        // 大型・高精度候補(fp16 単一ファイル ONNX・CLS プーリング・プレフィックス無し)。
+        // cos_baseline は暫定。採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+        Model::UserDefined(UserModel::BgeM3) => ModelSpec {
+            hf_repo: "Xenova/bge-m3",
+            query_prefix: "",
+            // clusterF1 真ピーク(cos≈0.72)が既定閾値 70 に来るよう校正(ベンチで決定)
+            cos_baseline: 0.072,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model_fp16.onnx",
+                pooling: Pooling::Cls,
+            },
+        },
+        Model::UserDefined(UserModel::ArcticEmbedLV2) => ModelSpec {
+            hf_repo: "Snowflake/snowflake-arctic-embed-l-v2.0",
+            query_prefix: "",
+            cos_baseline: 0.42,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model_fp16.onnx",
+                pooling: Pooling::Cls,
+            },
+        },
     }
 }
 
@@ -352,7 +385,7 @@ pub struct Narashi {
 impl Narashi {
     /// デフォルト設定で初期化する
     ///
-    /// 必要に応じてモデル・トークナイザをダウンロードします(初回のみ、既定の gte は約 1.2GB)。
+    /// 必要に応じてモデル・トークナイザをダウンロードします(初回のみ、既定の bge-m3 は約 1.06GB)。
     pub fn new() -> Result<Self> {
         Self::with_options(Options::default())
     }
@@ -633,11 +666,12 @@ mod tests {
     fn real_similarity_high() {
         let n = Narashi::new().unwrap();
         // 校正後スケール: 関連の強い表記ゆれは無関係ペアより明確に高くなる。
-        // 既定モデル gte では「猫」⇔「ネコ」≒73、「猫」⇔「自動車」≒28 と大きく分離する。
+        // 既定モデル bge-m3 では「猫」⇔「ネコ」≒65、「猫」⇔「自動車」≒46 と分離する
+        // (bge-m3 はコサインが高帯域に圧縮されるぶん gte より絶対差は小さいが順序は明確)。
         let related = n.similarity("猫", "ネコ").unwrap();
         let unrelated = n.similarity("猫", "自動車").unwrap();
         assert!(
-            related > 60.0 && related > unrelated + 20.0,
+            related > 60.0 && related > unrelated + 15.0,
             "expected related ({related}) clearly above unrelated ({unrelated})"
         );
     }

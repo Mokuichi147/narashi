@@ -36,6 +36,11 @@ fn main() -> Result<()> {
             UserModel::GraniteMultilingual311mR2.into(),
             "granite-311m-multilingual-r2",
         ),
+        Some("bge-m3") => (UserModel::BgeM3.into(), "bge-m3"),
+        Some("arctic-l") => (
+            UserModel::ArcticEmbedLV2.into(),
+            "snowflake-arctic-embed-l-v2.0",
+        ),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
         Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
         Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),
