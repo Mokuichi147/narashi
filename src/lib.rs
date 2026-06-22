@@ -71,12 +71,17 @@ pub mod eval;
 
 /// 既定の埋め込みモデル(gte-multilingual-base)
 ///
-/// 用語集ベンチマーク(日本語・英語・中国語混在)で、実運用挙動を表す clusterF1 が
-/// 全候補中で最高(ピーク 0.682)。しかもそのピークを既定閾値 [`DEFAULT_THRESHOLD`]
-/// ちょうどで、高い適合率(P=0.964 ≒ 誤統合がほぼ無い)を保ったまま達成する。
-/// 詳細な比較は `docs/benchmarks.md` を参照。
+/// 用語集ベンチマーク(日本語・英語・中国語混在)で、ピーク時の適合率が全モデル中で
+/// 最も高い(P=0.782、素ペア分類では誤統合 2 件・P=0.964)。表記ゆれ統合では
+/// 「異なる語を誤って統合する(=データ破壊)」が取りこぼしより痛いため、誤統合の
+/// 少なさを最優先して既定に据える。clusterF1 真ピークは 0.682 を既定閾値
+/// [`DEFAULT_THRESHOLD`] ちょうどで達成する。
 ///
-/// 速度・サイズ重視なら `--model small`(multilingual-e5-small, 約 0.45GB・最速級)へ、
+/// なお clusterF1 真ピーク自体は granite-278m(0.705)の方が高いが、閾値 70 での
+/// 誤統合が gte の約 10 倍(19 件)で「猫=犬」のようなデータ破壊型の誤りが増えるため
+/// 既定には採用しない(`--model granite` で選択可)。詳細は `docs/benchmarks.md` を参照。
+///
+/// 速度・サイズ重視なら `--model distiluse`(約 0.54GB)/ `--model small`(約 0.45GB)へ、
 /// 高再現率重視なら `--model paraphrase` へ切り替えられる。
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::GteMultilingualBase);
 
@@ -98,6 +103,26 @@ pub enum UserModel {
     /// (clusterF1 ピーク 0.667 を既定閾値 70 で達成)を最小サイズ・最速級で得る
     /// 軽量代替。詳細は `docs/benchmarks.md` を参照。
     DistiluseMultilingualV2,
+    /// ibm-granite/granite-embedding-97m-multilingual-r2
+    ///
+    /// IBM Granite Embedding R2(最新世代)の軽量版(384次元・CLS プーリング)。
+    /// 200+ 言語対応で日本語は明示的な学習対象。ONNX は単一ファイル(約 0.39GB)。
+    GraniteMultilingual97mR2,
+    /// ibm-granite/granite-embedding-107m-multilingual
+    ///
+    /// IBM Granite Embedding R1 の軽量版(768次元・CLS プーリング)。
+    /// XLM-RoBERTa 系。ONNX は単一ファイル(約 0.43GB)。
+    GraniteMultilingual107m,
+    /// ibm-granite/granite-embedding-278m-multilingual
+    ///
+    /// IBM Granite Embedding R1(768次元・CLS プーリング)。
+    /// XLM-RoBERTa 系。ONNX は単一ファイル(約 1.1GB)。
+    GraniteMultilingual278m,
+    /// ibm-granite/granite-embedding-311m-multilingual-r2
+    ///
+    /// IBM Granite Embedding R2(最新世代)の標準版(768次元・CLS プーリング)。
+    /// 200+ 言語対応で日本語は明示的な学習対象。ONNX は単一ファイル(約 1.25GB)。
+    GraniteMultilingual311mR2,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -179,6 +204,45 @@ fn model_spec(model: &Model) -> ModelSpec {
             source: ModelSource::UserDefined {
                 onnx_file: "onnx/model.onnx",
                 pooling: Pooling::Mean,
+            },
+        },
+        // IBM Granite Embedding 系(Apache 2.0・CLS プーリング・プレフィックス無し)。
+        // cos_baseline は暫定。採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+        Model::UserDefined(UserModel::GraniteMultilingual97mR2) => ModelSpec {
+            hf_repo: "ibm-granite/granite-embedding-97m-multilingual-r2",
+            query_prefix: "",
+            cos_baseline: 0.42,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model.onnx",
+                pooling: Pooling::Cls,
+            },
+        },
+        Model::UserDefined(UserModel::GraniteMultilingual107m) => ModelSpec {
+            hf_repo: "ibm-granite/granite-embedding-107m-multilingual",
+            query_prefix: "",
+            cos_baseline: 0.42,
+            source: ModelSource::UserDefined {
+                onnx_file: "model.onnx",
+                pooling: Pooling::Cls,
+            },
+        },
+        Model::UserDefined(UserModel::GraniteMultilingual278m) => ModelSpec {
+            hf_repo: "ibm-granite/granite-embedding-278m-multilingual",
+            query_prefix: "",
+            // clusterF1 真ピークが既定閾値 70 に来るよう校正(ベンチで決定)
+            cos_baseline: 0.44,
+            source: ModelSource::UserDefined {
+                onnx_file: "model.onnx",
+                pooling: Pooling::Cls,
+            },
+        },
+        Model::UserDefined(UserModel::GraniteMultilingual311mR2) => ModelSpec {
+            hf_repo: "ibm-granite/granite-embedding-311m-multilingual-r2",
+            query_prefix: "",
+            cos_baseline: 0.42,
+            source: ModelSource::UserDefined {
+                onnx_file: "onnx/model.onnx",
+                pooling: Pooling::Cls,
             },
         },
     }

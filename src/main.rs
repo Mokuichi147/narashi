@@ -6,9 +6,11 @@ use std::path::PathBuf;
 /// CLI から選択できる埋め込みモデル
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// gte-multilingual-base (既定・精度最良/clusterF1トップ・CJKに強い・768次元・約1.2GB)
+    /// gte-multilingual-base (既定・誤統合最小/最高適合率・CJKに強い・768次元・約1.2GB)
     Gte,
-    /// distiluse-multilingual-v2 (gte に次ぐ精度を最小サイズで・高適合率・約0.54GB)
+    /// granite-278m-multilingual (clusterF1最高だが誤統合が多め・日本語明示学習・768次元・約1.1GB)
+    Granite,
+    /// distiluse-multilingual-v2 (軽量代替・高適合率・約0.54GB)
     Distiluse,
     /// 多言語 E5 small (高適合率かつ最速級・軽量 約0.45GB)
     Small,
@@ -34,6 +36,7 @@ impl From<ModelArg> for Model {
             ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
             ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
             ModelArg::Gte => UserModel::GteMultilingualBase.into(),
+            ModelArg::Granite => UserModel::GraniteMultilingual278m.into(),
             ModelArg::Distiluse => UserModel::DistiluseMultilingualV2.into(),
         }
     }

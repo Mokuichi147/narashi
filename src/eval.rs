@@ -121,6 +121,10 @@ pub struct Clustering {
     pub expected_groups: usize,
     /// 予測されたクラスタ数
     pub predicted_clusters: usize,
+    /// 誤統合ペア数 (異グループの語を同一クラスタに入れてしまった数 = データ破壊)
+    pub false_merges: usize,
+    /// 誤統合の具体例 (異グループなのに統合された語ペア。表示用に一部のみ保持)
+    pub false_merge_examples: Vec<(String, String)>,
 }
 
 /// 速度指標
@@ -149,6 +153,8 @@ pub struct SweepRow {
     pub cluster_precision: f64,
     /// クラスタの再現率 (取りこぼしの少なさ)
     pub cluster_recall: f64,
+    /// 誤統合ペア数 (推移閉包込みで同一クラスタにされた異グループ間ペア = データ破壊)
+    pub false_merges: usize,
 }
 
 /// 1 モデル分のベンチマーク結果 (共通スペック)
@@ -222,6 +228,7 @@ fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> V
                 cluster_f1,
                 cluster_precision: cp,
                 cluster_recall: cr,
+                false_merges: cfp,
             }
         })
         .collect()
@@ -408,13 +415,21 @@ pub fn evaluate_with_load(
         }
     }
     let (mut ctp, mut cfp, mut cfn) = (0usize, 0usize, 0usize);
+    // 誤統合 (異グループなのに同一クラスタ) の具体例を先頭から数件保持する。
+    const MAX_FALSE_MERGE_EXAMPLES: usize = 8;
+    let mut false_merge_examples: Vec<(String, String)> = Vec::new();
     for i in 0..num {
         for j in (i + 1)..num {
             let same_pred = cluster_of.get(terms[i].as_str()) == cluster_of.get(terms[j].as_str());
             let same_true = group_ids[i] == group_ids[j];
             match (same_true, same_pred) {
                 (true, true) => ctp += 1,
-                (false, true) => cfp += 1,
+                (false, true) => {
+                    cfp += 1;
+                    if false_merge_examples.len() < MAX_FALSE_MERGE_EXAMPLES {
+                        false_merge_examples.push((terms[i].clone(), terms[j].clone()));
+                    }
+                }
                 (true, false) => cfn += 1,
                 (false, false) => {}
             }
@@ -443,6 +458,8 @@ pub fn evaluate_with_load(
         exact_group_match,
         expected_groups: glossary.groups.len(),
         predicted_clusters: groups.len(),
+        false_merges: cfp,
+        false_merge_examples,
     };
 
     // --- 閾値スイープ (既定閾値以外の挙動) ---
@@ -514,17 +531,40 @@ impl fmt::Display for Benchmark {
             cl.expected_groups,
             cl.predicted_clusters
         )?;
-        writeln!(f, "-- 閾値スイープ (分類F1 / クラスタF1 P R) --")?;
-        writeln!(f, "  閾値 |  分類F1 | クラスタF1 (   P  /   R  )")?;
+        writeln!(
+            f,
+            "-- 誤統合 (データ破壊: 異グループの語を統合した数, 閾値 {:.1}) --",
+            cl.threshold
+        )?;
+        write!(f, "  誤統合ペア数={}", cl.false_merges)?;
+        if cl.false_merge_examples.is_empty() {
+            writeln!(f, " (なし)")?;
+        } else {
+            let shown: Vec<String> = cl
+                .false_merge_examples
+                .iter()
+                .map(|(a, b)| format!("{a}⇔{b}"))
+                .collect();
+            let more = cl.false_merges.saturating_sub(shown.len());
+            let suffix = if more > 0 {
+                format!(" ほか{more}件")
+            } else {
+                String::new()
+            };
+            writeln!(f, "  例: {}{}", shown.join(", "), suffix)?;
+        }
+        writeln!(f, "-- 閾値スイープ (分類F1 / クラスタF1 P R / 誤統合) --")?;
+        writeln!(f, "  閾値 |  分類F1 | クラスタF1 (   P  /   R  ) | 誤統合")?;
         for row in &self.sweep {
             writeln!(
                 f,
-                "  {:>4.0} |  {:.3}  |   {:.3}   ( {:.3} / {:.3} )",
+                "  {:>4.0} |  {:.3}  |   {:.3}   ( {:.3} / {:.3} ) | {:>5}",
                 row.threshold,
                 row.class_f1,
                 row.cluster_f1,
                 row.cluster_precision,
-                row.cluster_recall
+                row.cluster_recall,
+                row.false_merges
             )?;
         }
         writeln!(f, "-- 速度 --")?;
