@@ -1,46 +1,82 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use narashi::{DEFAULT_THRESHOLD, EmbeddingModel, Group, Model, Narashi, Options, UserModel};
+#[cfg(feature = "onnx")]
+use narashi::EmbeddingModel;
+use narashi::{DEFAULT_THRESHOLD, Group, Model, Narashi, Options, UserModel};
 use std::path::PathBuf;
 
 /// CLI から選択できる埋め込みモデル
+///
+/// ONNX バックエンドのモデルは `onnx` 機能、Candle バックエンドのモデルは `candle` 機能が
+/// 有効なビルドでのみ選択できる(既定ビルドは両方有効)。
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
     /// bge-m3 (既定・clusterF1最高0.725で誤統合も最小・1024次元・約1.06GB・約3倍低速)
+    #[cfg(feature = "onnx")]
     BgeM3,
     /// gte-multilingual-base (高適合率・CJKに強い・速度重視の代替・768次元・約1.2GB)
+    #[cfg(feature = "onnx")]
     Gte,
     /// granite-278m-multilingual (clusterF1高め0.705だが誤統合が多め・日本語明示学習・768次元・約1.1GB)
+    #[cfg(feature = "onnx")]
     Granite,
     /// distiluse-multilingual-v2 (軽量代替・高適合率・約0.54GB)
+    #[cfg(feature = "onnx")]
     Distiluse,
     /// 多言語 E5 small (高適合率かつ最速級・軽量 約0.45GB)
+    #[cfg(feature = "onnx")]
     Small,
     /// 多言語 E5 large (E5系の上限・約8倍低速)
+    #[cfg(feature = "onnx")]
     Large,
     /// 多言語 E5 base (small に劣後・非推奨)
+    #[cfg(feature = "onnx")]
     Base,
     /// paraphrase-multilingual-MiniLM-L12-v2 (高再現率・要 高め閾値)
+    #[cfg(feature = "onnx")]
     Paraphrase,
     /// paraphrase-multilingual-mpnet-base-v2 (再現率最優先・要 高め閾値)
+    #[cfg(feature = "onnx")]
     Mpnet,
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
+    #[cfg(feature = "onnx")]
     ParaphraseQ,
+    /// multilingual-e5-large-instruct (Candle・ONNX変換が無く従来は利用不可だった・1024次元)
+    #[cfg(feature = "candle")]
+    E5Instruct,
 }
+
+/// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら e5-large-instruct。
+#[cfg(feature = "onnx")]
+const DEFAULT_MODEL_ARG: ModelArg = ModelArg::BgeM3;
+#[cfg(all(not(feature = "onnx"), feature = "candle"))]
+const DEFAULT_MODEL_ARG: ModelArg = ModelArg::E5Instruct;
 
 impl From<ModelArg> for Model {
     fn from(m: ModelArg) -> Self {
         match m {
+            #[cfg(feature = "onnx")]
             ModelArg::Small => EmbeddingModel::MultilingualE5Small.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Base => EmbeddingModel::MultilingualE5Base.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Large => EmbeddingModel::MultilingualE5Large.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Paraphrase => EmbeddingModel::ParaphraseMLMiniLML12V2.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Mpnet => EmbeddingModel::ParaphraseMLMpnetBaseV2.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::ParaphraseQ => EmbeddingModel::ParaphraseMLMiniLML12V2Q.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::BgeM3 => UserModel::BgeM3.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Gte => UserModel::GteMultilingualBase.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Granite => UserModel::GraniteMultilingual278m.into(),
+            #[cfg(feature = "onnx")]
             ModelArg::Distiluse => UserModel::DistiluseMultilingualV2.into(),
+            #[cfg(feature = "candle")]
+            ModelArg::E5Instruct => UserModel::E5LargeInstruct.into(),
         }
     }
 }
@@ -53,7 +89,7 @@ struct Cli {
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = ModelArg::BgeM3)]
+    #[arg(long, value_enum, default_value_t = DEFAULT_MODEL_ARG)]
     model: ModelArg,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
