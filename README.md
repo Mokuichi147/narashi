@@ -72,7 +72,7 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
 | `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | 再現率最優先。要 高め閾値(~87) |
 | `paraphrase-q` | paraphrase MiniLM 量子化版 | 384 | 高速だが現環境の ONNX Runtime では実行時エラー |
-| `e5-instruct` | multilingual-e5-large-instruct | 1024 | **Candle バックエンド**。ONNX 変換が無く従来は利用できなかった指示対応 E5。約 1.1GB(校正値は暫定・要ベンチ再校正) |
+| `e5-instruct` | multilingual-e5-large-instruct | 1024 | **Candle バックエンド**。外部重み付き ONNX で従来は利用できなかった指示対応 E5。clusterF1 真ピーク 0.670(gte 未満)・誤統合 38 件と多く Candle CPU で低速のため既定には非推奨だが、ONNX 非依存環境向けの選択肢。約 1.1GB |
 
 ### 実行バックエンド(フィーチャ)
 

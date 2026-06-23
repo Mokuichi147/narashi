@@ -146,11 +146,15 @@ pub enum UserModel {
     /// intfloat/multilingual-e5-large-instruct(**Candle バックエンド専用**)
     ///
     /// XLM-RoBERTa-large 系の指示対応 E5(1024次元・Mean プーリング・MIT)。
-    /// 100 言語対応で日本語も対象。**この HF リポジトリは ONNX 変換を同梱しておらず、
-    /// 従来の ONNX Runtime バックエンドでは利用できなかった**が、Candle バックエンドが
-    /// safetensors を直接読み込むことで利用可能になった。指示プレフィックス
-    /// (`"Instruct: ... \nQuery: "`)を付与して対称類似度に用いる。`cos_baseline` は
-    /// 暫定値で、採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+    /// 100 言語対応で日本語も対象。**この HF リポジトリの ONNX は外部重み付き
+    /// (`model.onnx_data`)で fastembed の単一ファイル経路では読めず、従来の ONNX
+    /// バックエンドでは利用できなかった**が、Candle バックエンドが safetensors を直接
+    /// 読み込むことで利用可能になった。指示プレフィックス(`"Instruct: ... \nQuery: "`)を
+    /// 付与して対称類似度に用いる。`cos_baseline=0.67` に校正し clusterF1 真ピークを既定
+    /// 閾値 70 に合わせている。ただし真ピークは 0.670(gte 0.682 未満)で、真ピーク時の
+    /// 誤統合 38 件と全モデル中最多・推論も Candle CPU で遅い(≈220–270ms/語)ため既定には
+    /// 採用せず、Candle バックエンドの実例兼 ONNX 非依存環境の選択肢に留める
+    /// (詳細は `docs/benchmarks.md`)。
     E5LargeInstruct,
 }
 
@@ -311,9 +315,10 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "intfloat/multilingual-e5-large-instruct",
             // 指示対応 E5。対称類似度では同一の指示を両テキストに付与する。
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery: ",
-            // 暫定値(類義語ペア cos≈0.96 / 非類義 cos≈0.79 の観測に基づく)。
-            // 採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
-            cos_baseline: 0.78,
+            // ベンチで clusterF1 真ピーク(cos≈0.90)が既定閾値 70 に来るよう校正。
+            // 真ピークは 0.670 と gte(0.682)未満かつ真ピーク時の誤統合 38 件と多いため
+            // 既定には採用せず eval 用の選択肢に留める(詳細は docs/benchmarks.md)。
+            cos_baseline: 0.67,
             pooling: Pool::Mean,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",

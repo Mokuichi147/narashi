@@ -72,6 +72,8 @@ fn main() -> Result<()> {
             UserModel::ArcticEmbedLV2.into(),
             "snowflake-arctic-embed-l-v2.0",
         ),
+        // Candle バックエンド専用 (ONNX 変換が外部重み付きで fastembed では読めないモデル)
+        Some("e5-instruct") => (UserModel::E5LargeInstruct.into(), "e5-large-instruct"),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
         Some("all-minilm") => (

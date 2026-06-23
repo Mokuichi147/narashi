@@ -41,7 +41,7 @@ enum ModelArg {
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
     #[cfg(feature = "onnx")]
     ParaphraseQ,
-    /// multilingual-e5-large-instruct (Candle・ONNX変換が無く従来は利用不可だった・1024次元)
+    /// multilingual-e5-large-instruct (Candle・ONNX非依存環境向け・clusterF1 0.670で誤統合多め・低速・1024次元)
     #[cfg(feature = "candle")]
     E5Instruct,
 }

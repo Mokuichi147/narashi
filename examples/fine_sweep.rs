@@ -41,6 +41,8 @@ fn main() -> Result<()> {
             UserModel::ArcticEmbedLV2.into(),
             "snowflake-arctic-embed-l-v2.0",
         ),
+        // Candle バックエンド専用
+        Some("e5-instruct") => (UserModel::E5LargeInstruct.into(), "e5-large-instruct"),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
         Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
         Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),
