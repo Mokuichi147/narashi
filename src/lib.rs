@@ -47,16 +47,24 @@
 //! 3. `std::env::temp_dir().join("narashi")`
 
 use anyhow::{Result, anyhow};
+#[cfg(feature = "onnx")]
 pub use fastembed::EmbeddingModel;
+#[cfg(feature = "onnx")]
 use fastembed::{
     InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
-use hf_hub::api::sync::ApiBuilder;
+use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
+
+#[cfg(feature = "candle")]
+mod candle_backend;
+
+#[cfg(not(any(feature = "onnx", feature = "candle")))]
+compile_error!("少なくとも 1 つのバックエンド機能(`onnx` または `candle`)を有効にしてください");
 
 /// キャッシュ保存先を上書きするための環境変数名 (`NARASHI_CACHE_DIR`)
 pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
@@ -135,6 +143,15 @@ pub enum UserModel {
     /// 74 言語対応。fp16 版が単一ファイル(約 1.06GB)。検索特化のため対称類似度では
     /// 同系 arctic-m-v2.0 同様に振るわない可能性があるが、大型枠の確認として評価する。
     ArcticEmbedLV2,
+    /// intfloat/multilingual-e5-large-instruct(**Candle バックエンド専用**)
+    ///
+    /// XLM-RoBERTa-large 系の指示対応 E5(1024次元・Mean プーリング・MIT)。
+    /// 100 言語対応で日本語も対象。**この HF リポジトリは ONNX 変換を同梱しておらず、
+    /// 従来の ONNX Runtime バックエンドでは利用できなかった**が、Candle バックエンドが
+    /// safetensors を直接読み込むことで利用可能になった。指示プレフィックス
+    /// (`"Instruct: ... \nQuery: "`)を付与して対称類似度に用いる。`cos_baseline` は
+    /// 暫定値で、採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+    E5LargeInstruct,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -144,12 +161,14 @@ pub enum UserModel {
 /// `with_model(EmbeddingModel::...)` のように組み込みモデルを直接渡せる。
 #[derive(Debug, Clone)]
 pub enum Model {
-    /// fastembed の組み込みモデル
+    /// fastembed の組み込みモデル(`onnx` 機能が必要)
+    #[cfg(feature = "onnx")]
     Builtin(EmbeddingModel),
     /// HF リポジトリから読み込むユーザー定義モデル
     UserDefined(UserModel),
 }
 
+#[cfg(feature = "onnx")]
 impl From<EmbeddingModel> for Model {
     fn from(m: EmbeddingModel) -> Self {
         Model::Builtin(m)
@@ -162,27 +181,33 @@ impl From<UserModel> for Model {
     }
 }
 
-/// モデルの読み込み方法
-enum ModelSource {
+/// プーリング方式(バックエンド非依存。E5/MiniLM は Mean、BGE/GTE は CLS)
+#[derive(Debug, Clone, Copy)]
+enum Pool {
+    /// 先頭(CLS)トークンの隠れ状態を用いる
+    Cls,
+    /// attention mask による加重平均を用いる
+    Mean,
+}
+
+/// モデルの実行バックエンドと重みの所在
+enum BackendKind {
     /// fastembed の組み込みモデル。fastembed 自身が ONNX を取得・管理する。
+    #[cfg(feature = "onnx")]
     Builtin(EmbeddingModel),
-    /// ユーザー定義モデル。`ModelSpec::hf_repo` から ONNX を直接読み込む。
-    UserDefined {
-        /// リポジトリ内の ONNX ファイルパス(例: `"onnx/model.onnx"`)
-        onnx_file: &'static str,
-        /// プーリング方式(モデル依存。E5/MiniLM は Mean、BGE/GTE は CLS)
-        pooling: Pooling,
-    },
+    /// `ModelSpec::hf_repo` の ONNX を fastembed で直接読み込む(例: `"onnx/model.onnx"`)
+    Onnx { weights_file: &'static str },
+    /// `ModelSpec::hf_repo` の safetensors を Candle で直接読み込む(例: `"model.safetensors"`)
+    Candle { weights_file: &'static str },
 }
 
 /// モデルごとの取り扱いを記述したメタ情報
 ///
 /// モデルによって入力プレフィックスやコサイン類似度の分布が異なるため、
-/// トークナイザ取得元・プレフィックス・スコア校正のベースライン・読み込み方法を
-/// 切り替える。
+/// トークナイザ取得元・プレフィックス・スコア校正のベースライン・プーリング・
+/// 実行バックエンドを切り替える。
 struct ModelSpec {
-    /// `tokenizer.json` を取得する Hugging Face リポジトリ ID
-    /// (ユーザー定義モデルでは ONNX の取得元も兼ねる)
+    /// `tokenizer.json`(および重み)を取得する Hugging Face リポジトリ ID
     hf_repo: &'static str,
     /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
     query_prefix: &'static str,
@@ -190,22 +215,25 @@ struct ModelSpec {
     ///
     /// この値を 0、コサイン 1.0 を 100 に写像してスコアの識別力を高める。
     cos_baseline: f32,
-    /// ONNX の読み込み方法
-    source: ModelSource,
+    /// プーリング方式(`Builtin` は fastembed が内部で決めるため未使用)
+    pooling: Pool,
+    /// 実行バックエンドと重みファイル
+    backend: BackendKind,
 }
 
 /// 指定モデルの取り扱いメタ情報を返す
 fn model_spec(model: &Model) -> ModelSpec {
     match model {
+        #[cfg(feature = "onnx")]
         Model::Builtin(m) => builtin_spec(m),
         Model::UserDefined(UserModel::GteMultilingualBase) => ModelSpec {
             hf_repo: "onnx-community/gte-multilingual-base",
             // GTE は STS/類似度用途では指示プレフィックス無しの対称利用。
             query_prefix: "",
             cos_baseline: 0.42,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model.onnx",
             },
         },
         Model::UserDefined(UserModel::DistiluseMultilingualV2) => ModelSpec {
@@ -213,9 +241,9 @@ fn model_spec(model: &Model) -> ModelSpec {
             query_prefix: "",
             // ピーク clusterF1 を既定閾値 70 に合わせる校正値(ベンチで決定)
             cos_baseline: 0.39,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model.onnx",
-                pooling: Pooling::Mean,
+            pooling: Pool::Mean,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model.onnx",
             },
         },
         // IBM Granite Embedding 系(Apache 2.0・CLS プーリング・プレフィックス無し)。
@@ -224,18 +252,18 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-97m-multilingual-r2",
             query_prefix: "",
             cos_baseline: 0.42,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model.onnx",
             },
         },
         Model::UserDefined(UserModel::GraniteMultilingual107m) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-107m-multilingual",
             query_prefix: "",
             cos_baseline: 0.42,
-            source: ModelSource::UserDefined {
-                onnx_file: "model.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "model.onnx",
             },
         },
         Model::UserDefined(UserModel::GraniteMultilingual278m) => ModelSpec {
@@ -243,18 +271,18 @@ fn model_spec(model: &Model) -> ModelSpec {
             query_prefix: "",
             // clusterF1 真ピークが既定閾値 70 に来るよう校正(ベンチで決定)
             cos_baseline: 0.44,
-            source: ModelSource::UserDefined {
-                onnx_file: "model.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "model.onnx",
             },
         },
         Model::UserDefined(UserModel::GraniteMultilingual311mR2) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-311m-multilingual-r2",
             query_prefix: "",
             cos_baseline: 0.42,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model.onnx",
             },
         },
         // 大型・高精度候補(fp16 単一ファイル ONNX・CLS プーリング・プレフィックス無し)。
@@ -264,24 +292,38 @@ fn model_spec(model: &Model) -> ModelSpec {
             query_prefix: "",
             // clusterF1 真ピーク(cos≈0.72)が既定閾値 70 に来るよう校正(ベンチで決定)
             cos_baseline: 0.072,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model_fp16.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model_fp16.onnx",
             },
         },
         Model::UserDefined(UserModel::ArcticEmbedLV2) => ModelSpec {
             hf_repo: "Snowflake/snowflake-arctic-embed-l-v2.0",
             query_prefix: "",
             cos_baseline: 0.42,
-            source: ModelSource::UserDefined {
-                onnx_file: "onnx/model_fp16.onnx",
-                pooling: Pooling::Cls,
+            pooling: Pool::Cls,
+            backend: BackendKind::Onnx {
+                weights_file: "onnx/model_fp16.onnx",
+            },
+        },
+        // Candle バックエンド専用。ONNX 変換が無い safetensors モデルを直接読み込む。
+        Model::UserDefined(UserModel::E5LargeInstruct) => ModelSpec {
+            hf_repo: "intfloat/multilingual-e5-large-instruct",
+            // 指示対応 E5。対称類似度では同一の指示を両テキストに付与する。
+            query_prefix: "Instruct: Retrieve semantically similar text.\nQuery: ",
+            // 暫定値(類義語ペア cos≈0.96 / 非類義 cos≈0.79 の観測に基づく)。
+            // 採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+            cos_baseline: 0.78,
+            pooling: Pool::Mean,
+            backend: BackendKind::Candle {
+                weights_file: "model.safetensors",
             },
         },
     }
 }
 
 /// fastembed 組み込みモデルの取り扱いメタ情報を返す
+#[cfg(feature = "onnx")]
 fn builtin_spec(model: &EmbeddingModel) -> ModelSpec {
     let (hf_repo, query_prefix, cos_baseline) = match model {
         EmbeddingModel::MultilingualE5Small => ("intfloat/multilingual-e5-small", "query: ", 0.70),
@@ -307,7 +349,9 @@ fn builtin_spec(model: &EmbeddingModel) -> ModelSpec {
         hf_repo,
         query_prefix,
         cos_baseline,
-        source: ModelSource::Builtin(model.clone()),
+        // 組み込みモデルのプーリングは fastembed が内部で決めるため未使用。
+        pooling: Pool::Mean,
+        backend: BackendKind::Builtin(model.clone()),
     }
 }
 
@@ -374,12 +418,81 @@ pub struct Group {
 /// モデルの読み込みには時間がかかるため、複数回使う場合は同じインスタンスを
 /// 再利用してください。
 pub struct Narashi {
-    embedder: TextEmbedding,
+    embedder: Embedder,
     tokenizer: Tokenizer,
     /// 埋め込み入力に付与するプレフィックス(モデル依存)
     query_prefix: &'static str,
     /// スコア校正の基準コサイン値(モデル依存)
     cos_baseline: f32,
+}
+
+/// 実行時の埋め込み器(バックエンドごとの実体)
+enum Embedder {
+    /// fastembed(ONNX Runtime)
+    #[cfg(feature = "onnx")]
+    Onnx(TextEmbedding),
+    /// Candle(ピュア Rust)
+    #[cfg(feature = "candle")]
+    Candle(candle_backend::CandleEmbedder),
+}
+
+impl Embedder {
+    /// プレフィックス付与済みのテキスト群を埋め込む
+    fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        match self {
+            #[cfg(feature = "onnx")]
+            Embedder::Onnx(e) => Ok(e.embed(inputs, None)?),
+            #[cfg(feature = "candle")]
+            Embedder::Candle(e) => e.embed(&inputs),
+        }
+    }
+}
+
+/// ユーザー定義 ONNX モデルを fastembed で読み込む
+#[cfg(feature = "onnx")]
+fn build_onnx_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result<Embedder> {
+    let fetch = |name: &str| -> Result<Vec<u8>> {
+        let path = repo
+            .get(name)
+            .map_err(|e| anyhow!("{name} download failed: {e}"))?;
+        Ok(std::fs::read(path)?)
+    };
+    let tokenizer_files = TokenizerFiles {
+        tokenizer_file: fetch("tokenizer.json")?,
+        config_file: fetch("config.json")?,
+        special_tokens_map_file: fetch("special_tokens_map.json")?,
+        tokenizer_config_file: fetch("tokenizer_config.json")?,
+    };
+    let pooling = match pool {
+        Pool::Cls => Pooling::Cls,
+        Pool::Mean => Pooling::Mean,
+    };
+    let user_model =
+        UserDefinedEmbeddingModel::new(fetch(weights_file)?, tokenizer_files).with_pooling(pooling);
+    Ok(Embedder::Onnx(TextEmbedding::try_new_from_user_defined(
+        user_model,
+        InitOptionsUserDefined::new(),
+    )?))
+}
+
+/// safetensors モデルを Candle で読み込む
+#[cfg(feature = "candle")]
+fn build_candle_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result<Embedder> {
+    let fetch = |name: &str| -> Result<Vec<u8>> {
+        let path = repo
+            .get(name)
+            .map_err(|e| anyhow!("{name} download failed: {e}"))?;
+        Ok(std::fs::read(path)?)
+    };
+    let weights = repo
+        .get(weights_file)
+        .map_err(|e| anyhow!("{weights_file} download failed: {e}"))?;
+    Ok(Embedder::Candle(candle_backend::CandleEmbedder::new(
+        &fetch("config.json")?,
+        &fetch("tokenizer.json")?,
+        &weights,
+        pool,
+    )?))
 }
 
 impl Narashi {
@@ -404,28 +517,40 @@ impl Narashi {
             .map_err(|e| anyhow!("hf-hub init failed: {e}"))?;
         let repo = api.model(spec.hf_repo.to_string());
 
-        // 埋め込みモデルを読み込む。組み込みは fastembed が ONNX を管理し、
-        // ユーザー定義は hf_repo の ONNX を直接読み込む。
-        let embedder = match &spec.source {
-            ModelSource::Builtin(m) => TextEmbedding::try_new(
-                InitOptions::new(m.clone()).with_cache_dir(cache_dir.clone()),
-            )?,
-            ModelSource::UserDefined { onnx_file, pooling } => {
-                let fetch = |name: &str| -> Result<Vec<u8>> {
-                    let path = repo
-                        .get(name)
-                        .map_err(|e| anyhow!("{name} download failed: {e}"))?;
-                    Ok(std::fs::read(path)?)
-                };
-                let tokenizer_files = TokenizerFiles {
-                    tokenizer_file: fetch("tokenizer.json")?,
-                    config_file: fetch("config.json")?,
-                    special_tokens_map_file: fetch("special_tokens_map.json")?,
-                    tokenizer_config_file: fetch("tokenizer_config.json")?,
-                };
-                let user_model = UserDefinedEmbeddingModel::new(fetch(onnx_file)?, tokenizer_files)
-                    .with_pooling(pooling.clone());
-                TextEmbedding::try_new_from_user_defined(user_model, InitOptionsUserDefined::new())?
+        // 埋め込みモデルを読み込む。バックエンドに応じて取得元・読み込み方法を切り替える。
+        // 必要な機能が無効な場合はその旨を伝えて中断する。
+        let embedder = match spec.backend {
+            #[cfg(feature = "onnx")]
+            BackendKind::Builtin(m) => Embedder::Onnx(TextEmbedding::try_new(
+                InitOptions::new(m).with_cache_dir(cache_dir.clone()),
+            )?),
+            BackendKind::Onnx { weights_file } => {
+                #[cfg(feature = "onnx")]
+                {
+                    build_onnx_embedder(&repo, weights_file, spec.pooling)?
+                }
+                #[cfg(not(feature = "onnx"))]
+                {
+                    let _ = weights_file;
+                    return Err(anyhow!(
+                        "モデル '{}' は ONNX バックエンドが必要です(`--features onnx` を有効にして再ビルドしてください)",
+                        spec.hf_repo
+                    ));
+                }
+            }
+            BackendKind::Candle { weights_file } => {
+                #[cfg(feature = "candle")]
+                {
+                    build_candle_embedder(&repo, weights_file, spec.pooling)?
+                }
+                #[cfg(not(feature = "candle"))]
+                {
+                    let _ = weights_file;
+                    return Err(anyhow!(
+                        "モデル '{}' は Candle バックエンドが必要です(`--features candle` を有効にして再ビルドしてください)",
+                        spec.hf_repo
+                    ));
+                }
             }
         };
 
@@ -462,7 +587,7 @@ impl Narashi {
             .iter()
             .map(|t| format!("{}{}", self.query_prefix, t))
             .collect();
-        let mut embeddings = self.embedder.embed(inputs, None)?;
+        let mut embeddings = self.embedder.embed(inputs)?;
         embeddings.par_iter_mut().for_each(|v| normalize_l2(v));
         Ok(embeddings)
     }
@@ -689,5 +814,42 @@ mod tests {
             println!("canonical={} members={:?}", g.canonical, g.members);
         }
         assert!(!groups.is_empty());
+    }
+
+    /// Candle バックエンドが safetensors から埋め込みを生成し、類義語ペアを
+    /// 非類義ペアより明確に高くスコアリングすることを確認する。
+    ///
+    /// ネットワーク不要。ローカルに `config.json` / `tokenizer.json` /
+    /// `model.safetensors` を置き、`NARASHI_TEST_MODEL_DIR` でそのディレクトリを
+    /// 指定して `cargo test --features candle -- --ignored` で実行する。
+    #[cfg(feature = "candle")]
+    #[test]
+    #[ignore]
+    fn candle_embedder_separates_synonyms() {
+        let dir = std::env::var("NARASHI_TEST_MODEL_DIR")
+            .expect("NARASHI_TEST_MODEL_DIR を safetensors モデルのディレクトリに設定してください");
+        let p = Path::new(&dir);
+        let cfg = std::fs::read(p.join("config.json")).unwrap();
+        let tok = std::fs::read(p.join("tokenizer.json")).unwrap();
+        let emb = crate::candle_backend::CandleEmbedder::new(
+            &cfg,
+            &tok,
+            &p.join("model.safetensors"),
+            Pool::Mean,
+        )
+        .unwrap();
+        let prefix = "Instruct: Retrieve semantically similar text.\nQuery: ";
+        let mk = |s: &str| format!("{prefix}{s}");
+        let texts = vec![mk("白い背景"), mk("白背景"), mk("頬紅"), mk("照れ")];
+        let mut v = emb.embed(&texts).unwrap();
+        for x in v.iter_mut() {
+            normalize_l2(x);
+        }
+        let synonym = dot(&v[0], &v[1]);
+        let unrelated = dot(&v[0], &v[2]);
+        assert!(
+            synonym > unrelated + 0.05,
+            "synonym pair ({synonym}) should clearly exceed unrelated ({unrelated})"
+        );
     }
 }

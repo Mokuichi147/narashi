@@ -10,8 +10,29 @@ readme = "README.md"
 keywords = ["nlp", "embeddings", "similarity", "deduplication", "fuzzy-matching"]
 categories = ["text-processing", "command-line-utilities"]
 
+[[example]]
+name = "benchmark"
+required-features = ["onnx"]
+
+[[example]]
+name = "fine_sweep"
+required-features = ["onnx"]
+
+[features]
+default = ["onnx", "candle"]
+# ONNX Runtime バックエンド(fastembed)。組み込みカタログと Xenova/ONNX 変換モデルを扱う。
+onnx = ["dep:fastembed"]
+# Candle バックエンド(ピュア Rust)。HF の safetensors を直接読み込み、ONNX 変換が
+# 存在しない XLM-RoBERTa 系モデルも利用できる。ネイティブ ONNX Runtime バイナリを
+# 取得できない環境(オフライン・制限ネットワーク等)でも `--no-default-features --features candle` でビルド可能。
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:serde_json"]
+
 [dependencies]
-fastembed = "4"
+fastembed = { version = "4", optional = true }
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
+serde_json = { version = "1", optional = true }
 tokenizers = { version = "0.21", default-features = false, features = ["http", "onig"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
