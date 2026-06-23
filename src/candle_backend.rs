@@ -16,8 +16,21 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3::{Config as Qwen3Config, Model as Qwen3Model};
 use candle_transformers::models::xlm_roberta::{Config as XlmConfig, XLMRobertaModel};
 use std::collections::HashMap;
-use std::path::Path;
 use tokenizers::Tokenizer;
+
+/// Qwen3 の計算精度をモデルサイズで選ぶ。
+///
+/// candle の CPU バックエンドは **bf16 の matmul 非対応**なので bf16 は使えない。
+/// 小型(0.6B・hidden 1024)は **f32** で高速に回す。大型(4B:hidden 2560・8B:4096)は
+/// f32 だと RAM を超える(4B で約 16GB・8B で約 32GB)ため **f16** で読む(約半分の 8GB/16GB)。
+/// 0.6B では f32 と f16 で clusterF1 が一致することを確認済み(f16 は CPU で約 3 倍遅いだけ)。
+fn qwen3_dtype(cfg: &Qwen3Config) -> DType {
+    if cfg.hidden_size <= 1024 {
+        DType::F32
+    } else {
+        DType::F16
+    }
+}
 
 /// 対応するモデルアーキテクチャと、その重みの保持方法
 enum Backend {
@@ -27,8 +40,8 @@ enum Backend {
     /// 繰り返すとキャッシュが連結されてしまう一方、candle 0.9 の CPU バックエンドは
     /// バッチ(>1)+因果マスクの broadcast で添字エラーになる。そこで **1 件ずつ
     /// (バッチ=1)** 処理し、各件でモデルを作り直して(=まっさらなキャッシュで 1 回だけ
-    /// 前向き計算)回避する。重みは初回に f32 へ昇格・`model.` 接頭辞付けして常駐させ、
-    /// 都度の作り直しは Arc 共有のため安価(I/O や変換なし)。
+    /// 前向き計算)回避する。重みは初回に [`qwen3_dtype`] の精度へ変換・`model.` 接頭辞
+    /// 付けして常駐させ、都度の作り直しは Arc 共有のため安価(I/O や変換なし)。
     Qwen3 {
         cfg: Qwen3Config,
         tensors: HashMap<String, Tensor>,
@@ -44,14 +57,15 @@ pub(crate) struct CandleEmbedder {
 }
 
 impl CandleEmbedder {
-    /// `config.json` / `tokenizer.json` のバイト列と safetensors のパスから初期化する
+    /// `config.json` / `tokenizer.json` のバイト列と safetensors のパス群から初期化する
     ///
-    /// `config.json` の `model_type` でアーキテクチャを判定する。重みは fp16/bf16/fp32 の
-    /// いずれでも mmap して f32 として読み込む(低精度重みは自動で昇格)。
+    /// `config.json` の `model_type` でアーキテクチャを判定する。`weights` は分割保存
+    /// (シャード)に対応するためパスの slice。XLM-RoBERTa は f32 へ昇格、Qwen3 は
+    /// [`qwen3_dtype`] が選ぶ精度(0.6B は f32、4B/8B は RAM 削減のため f16)で読む。
     pub(crate) fn new(
         config_json: &[u8],
         tokenizer_json: &[u8],
-        weights: &Path,
+        weights: &[std::path::PathBuf],
         pool: Pool,
     ) -> Result<Self> {
         let device = Device::Cpu;
@@ -69,9 +83,8 @@ impl CandleEmbedder {
             "xlm-roberta" => {
                 let cfg: XlmConfig = serde_json::from_slice(config_json)
                     .map_err(|e| anyhow!("config.json parse failed: {e}"))?;
-                let vb = unsafe {
-                    VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, &device)?
-                };
+                let vb =
+                    unsafe { VarBuilder::from_mmaped_safetensors(weights, DType::F32, &device)? };
                 Backend::XlmRoberta(XLMRobertaModel::new(&cfg, vb)?)
             }
             "qwen3" => {
@@ -79,11 +92,14 @@ impl CandleEmbedder {
                     .map_err(|e| anyhow!("config.json parse failed: {e}"))?;
                 // Qwen3-Embedding の safetensors は `embed_tokens` / `layers` / `norm` のように
                 // `model.` 接頭辞無しで重みを保存しているが、candle の `Model::new` は `model.`
-                // 接頭辞を前提とする。読み込み後にキーへ `model.` を付け、f32 へ昇格して常駐。
-                let raw = candle_core::safetensors::load(weights, &device)?;
-                let mut tensors = HashMap::with_capacity(raw.len());
-                for (k, v) in raw {
-                    tensors.insert(format!("model.{k}"), v.to_dtype(DType::F32)?);
+                // 接頭辞を前提とする。読み込み後にキーへ `model.` を付けて常駐。重みは複数
+                // シャード(4B/8B)に分かれることがあるので全シャードをマージする。
+                let dtype = qwen3_dtype(&cfg);
+                let mut tensors = HashMap::new();
+                for shard in weights {
+                    for (k, v) in candle_core::safetensors::load(shard, &device)? {
+                        tensors.insert(format!("model.{k}"), v.to_dtype(dtype)?);
+                    }
                 }
                 Backend::Qwen3 { cfg, tensors }
             }
@@ -167,11 +183,12 @@ impl CandleEmbedder {
         let input = Tensor::from_vec(ids, (1, n), &self.device)?;
 
         // Arc 共有のクローン(I/O・変換なし)。新しい Model = まっさらな KvCache。
-        let vb = VarBuilder::from_tensors(tensors.clone(), DType::F32, &self.device);
+        let vb = VarBuilder::from_tensors(tensors.clone(), qwen3_dtype(cfg), &self.device);
         let mut model = Qwen3Model::new(cfg, vb)?;
-        // 最終層の隠れ状態 [1, n, hidden] の末尾トークン(= EOS)
+        // 最終層の隠れ状態 [1, n, hidden] の末尾トークン(= EOS)。
+        // 計算は f16(CPU の matmul が bf16 非対応のため)なので f32 へ戻して返す。
         let hs = model.forward(&input, 0)?;
-        let pooled = hs.i((0, n - 1))?;
+        let pooled = hs.i((0, n - 1))?.to_dtype(DType::F32)?;
         Ok(pooled.to_vec1()?)
     }
 }

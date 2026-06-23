@@ -76,6 +76,8 @@ fn main() -> Result<()> {
         Some("e5-instruct") => (UserModel::E5LargeInstruct.into(), "e5-large-instruct"),
         // Candle バックエンド専用 (Qwen3 デコーダ + last-token プーリング)
         Some("qwen3") => (UserModel::Qwen3Embedding0_6B.into(), "qwen3-embedding-0.6b"),
+        Some("qwen3-4b") => (UserModel::Qwen3Embedding4B.into(), "qwen3-embedding-4b"),
+        Some("qwen3-8b") => (UserModel::Qwen3Embedding8B.into(), "qwen3-embedding-8b"),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
         Some("all-minilm") => (

@@ -44,9 +44,17 @@ enum ModelArg {
     /// multilingual-e5-large-instruct (Candle・ONNX非依存環境向け・clusterF1 0.670で誤統合多め・低速・1024次元)
     #[cfg(feature = "candle")]
     E5Instruct,
-    /// Qwen3-Embedding-0.6B (Candle・clusterF1最高0.748で誤統合最小だが低速・1024次元・精度最優先/ONNX非依存向け)
+    /// Qwen3-Embedding-0.6B (Candle・clusterF1 0.748で誤統合最小だが低速・1024次元・精度最優先/ONNX非依存向け)
     #[cfg(feature = "candle")]
     Qwen3,
+    /// Qwen3-Embedding-4B (Candle・clusterF1最高0.964でほぼ完璧だが超低速≈3.9秒/語・約8GB RAM・GPU/バッチ向け)
+    #[cfg(feature = "candle")]
+    #[value(name = "qwen3-4b")]
+    Qwen34b,
+    /// Qwen3-Embedding-8B (Candle・eval用・約16GB RAM 必須・さらに低速)
+    #[cfg(feature = "candle")]
+    #[value(name = "qwen3-8b")]
+    Qwen38b,
 }
 
 /// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら Qwen3-Embedding
@@ -83,6 +91,10 @@ impl From<ModelArg> for Model {
             ModelArg::E5Instruct => UserModel::E5LargeInstruct.into(),
             #[cfg(feature = "candle")]
             ModelArg::Qwen3 => UserModel::Qwen3Embedding0_6B.into(),
+            #[cfg(feature = "candle")]
+            ModelArg::Qwen34b => UserModel::Qwen3Embedding4B.into(),
+            #[cfg(feature = "candle")]
+            ModelArg::Qwen38b => UserModel::Qwen3Embedding8B.into(),
         }
     }
 }

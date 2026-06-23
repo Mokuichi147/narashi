@@ -44,6 +44,8 @@ fn main() -> Result<()> {
         // Candle バックエンド専用
         Some("e5-instruct") => (UserModel::E5LargeInstruct.into(), "e5-large-instruct"),
         Some("qwen3") => (UserModel::Qwen3Embedding0_6B.into(), "qwen3-embedding-0.6b"),
+        Some("qwen3-4b") => (UserModel::Qwen3Embedding4B.into(), "qwen3-embedding-4b"),
+        Some("qwen3-8b") => (UserModel::Qwen3Embedding8B.into(), "qwen3-embedding-8b"),
         Some("large") => (EmbeddingModel::MultilingualE5Large.into(), "e5-large"),
         Some("base") => (EmbeddingModel::MultilingualE5Base.into(), "e5-base"),
         Some("mpnet") => (EmbeddingModel::ParaphraseMLMpnetBaseV2.into(), "mpnet"),
