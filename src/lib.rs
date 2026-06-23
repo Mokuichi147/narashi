@@ -156,6 +156,20 @@ pub enum UserModel {
     /// 採用せず、Candle バックエンドの実例兼 ONNX 非依存環境の選択肢に留める
     /// (詳細は `docs/benchmarks.md`)。
     E5LargeInstruct,
+    /// Qwen/Qwen3-Embedding-0.6B(**Candle バックエンド専用**)
+    ///
+    /// Qwen3(デコーダ専用 Transformer)ベースの埋め込みモデル(1024次元・**LastToken
+    /// プーリング**・Apache 2.0)。100+ 言語対応。**last-token プーリングは fastembed
+    /// (Cls/Mean のみ)が非対応で従来は評価できなかった**が、Candle バックエンドが
+    /// safetensors を直接読み、末尾(EOS)トークンの隠れ状態を取り出すことで利用可能に
+    /// なった。指示プレフィックス(`"Instruct: ...\nQuery:"`)を付与して対称類似度に用いる。
+    /// `cos_baseline=0.69` に校正し clusterF1 真ピークを既定閾値 70 付近に合わせている。
+    /// **clusterF1 真ピーク 0.748(全評価モデル中で最高・bge-m3 0.725 超)** を P=0.984・
+    /// 誤統合 1 件と高精度・高安全性で達成する。ただしデコーダ系で重く、推論は Candle CPU で
+    /// 低速(≈200ms/語・bge-m3 の約 12 倍)かつ Candle 専用のため、**既定は速度重視で
+    /// bge-m3 のまま**とし、精度最優先/ONNX 非依存環境向けの選択肢として提供する
+    /// (詳細は `docs/benchmarks.md`)。
+    Qwen3Embedding0_6B,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -185,13 +199,16 @@ impl From<UserModel> for Model {
     }
 }
 
-/// プーリング方式(バックエンド非依存。E5/MiniLM は Mean、BGE/GTE は CLS)
+/// プーリング方式(バックエンド非依存。E5/MiniLM は Mean、BGE/GTE は CLS、
+/// Qwen3 等のデコーダ系埋め込みは末尾(EOS)トークンの LastToken)
 #[derive(Debug, Clone, Copy)]
 enum Pool {
     /// 先頭(CLS)トークンの隠れ状態を用いる
     Cls,
     /// attention mask による加重平均を用いる
     Mean,
+    /// 末尾(最後の実トークン=EOS)の隠れ状態を用いる(デコーダ系埋め込み)
+    LastToken,
 }
 
 /// モデルの実行バックエンドと重みの所在
@@ -320,6 +337,18 @@ fn model_spec(model: &Model) -> ModelSpec {
             // 既定には採用せず eval 用の選択肢に留める(詳細は docs/benchmarks.md)。
             cos_baseline: 0.67,
             pooling: Pool::Mean,
+            backend: BackendKind::Candle {
+                weights_file: "model.safetensors",
+            },
+        },
+        // Candle バックエンド専用。Qwen3 デコーダ + last-token プーリング。
+        Model::UserDefined(UserModel::Qwen3Embedding0_6B) => ModelSpec {
+            hf_repo: "Qwen/Qwen3-Embedding-0.6B",
+            // Qwen3-Embedding 公式のクエリ書式。対称類似度では両テキストに同一指示を付与。
+            query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
+            // ベンチで clusterF1 真ピーク(cos≈0.91)が既定閾値 70 に来るよう校正。
+            cos_baseline: 0.69,
+            pooling: Pool::LastToken,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",
             },
@@ -471,6 +500,13 @@ fn build_onnx_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result
     let pooling = match pool {
         Pool::Cls => Pooling::Cls,
         Pool::Mean => Pooling::Mean,
+        // fastembed(ONNX)は last-token プーリング非対応。LastToken を要するモデルは
+        // Candle バックエンド側で扱うため、ここに到達することはない。
+        Pool::LastToken => {
+            return Err(anyhow!(
+                "last-token プーリングは ONNX バックエンドでは非対応です(Candle が必要)"
+            ));
+        }
     };
     let user_model =
         UserDefinedEmbeddingModel::new(fetch(weights_file)?, tokenizer_files).with_pooling(pooling);

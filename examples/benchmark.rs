@@ -74,6 +74,8 @@ fn main() -> Result<()> {
         ),
         // Candle バックエンド専用 (ONNX 変換が外部重み付きで fastembed では読めないモデル)
         Some("e5-instruct") => (UserModel::E5LargeInstruct.into(), "e5-large-instruct"),
+        // Candle バックエンド専用 (Qwen3 デコーダ + last-token プーリング)
+        Some("qwen3") => (UserModel::Qwen3Embedding0_6B.into(), "qwen3-embedding-0.6b"),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
         Some("all-minilm") => (
