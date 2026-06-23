@@ -146,12 +146,45 @@ pub enum UserModel {
     /// intfloat/multilingual-e5-large-instruct(**Candle バックエンド専用**)
     ///
     /// XLM-RoBERTa-large 系の指示対応 E5(1024次元・Mean プーリング・MIT)。
-    /// 100 言語対応で日本語も対象。**この HF リポジトリは ONNX 変換を同梱しておらず、
-    /// 従来の ONNX Runtime バックエンドでは利用できなかった**が、Candle バックエンドが
-    /// safetensors を直接読み込むことで利用可能になった。指示プレフィックス
-    /// (`"Instruct: ... \nQuery: "`)を付与して対称類似度に用いる。`cos_baseline` は
-    /// 暫定値で、採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
+    /// 100 言語対応で日本語も対象。**この HF リポジトリの ONNX は外部重み付き
+    /// (`model.onnx_data`)で fastembed の単一ファイル経路では読めず、従来の ONNX
+    /// バックエンドでは利用できなかった**が、Candle バックエンドが safetensors を直接
+    /// 読み込むことで利用可能になった。指示プレフィックス(`"Instruct: ... \nQuery: "`)を
+    /// 付与して対称類似度に用いる。`cos_baseline=0.67` に校正し clusterF1 真ピークを既定
+    /// 閾値 70 に合わせている。ただし真ピークは 0.670(gte 0.682 未満)で、真ピーク時の
+    /// 誤統合 38 件と全モデル中最多・推論も Candle CPU で遅い(≈220–270ms/語)ため既定には
+    /// 採用せず、Candle バックエンドの実例兼 ONNX 非依存環境の選択肢に留める
+    /// (詳細は `docs/benchmarks.md`)。
     E5LargeInstruct,
+    /// Qwen/Qwen3-Embedding-0.6B(**Candle バックエンド専用**)
+    ///
+    /// Qwen3(デコーダ専用 Transformer)ベースの埋め込みモデル(1024次元・**LastToken
+    /// プーリング**・Apache 2.0)。100+ 言語対応。**last-token プーリングは fastembed
+    /// (Cls/Mean のみ)が非対応で従来は評価できなかった**が、Candle バックエンドが
+    /// safetensors を直接読み、末尾(EOS)トークンの隠れ状態を取り出すことで利用可能に
+    /// なった。指示プレフィックス(`"Instruct: ...\nQuery:"`)を付与して対称類似度に用いる。
+    /// `cos_baseline=0.69` に校正し clusterF1 真ピークを既定閾値 70 付近に合わせている。
+    /// **clusterF1 真ピーク 0.748(全評価モデル中で最高・bge-m3 0.725 超)** を P=0.984・
+    /// 誤統合 1 件と高精度・高安全性で達成する。ただしデコーダ系で重く、推論は Candle CPU で
+    /// 低速(≈200ms/語・bge-m3 の約 12 倍)かつ Candle 専用のため、**既定は速度重視で
+    /// bge-m3 のまま**とし、精度最優先/ONNX 非依存環境向けの選択肢として提供する
+    /// (詳細は `docs/benchmarks.md`)。
+    Qwen3Embedding0_6B,
+    /// Qwen/Qwen3-Embedding-4B(**Candle バックエンド専用・精度上限枠**)
+    ///
+    /// Qwen3-Embedding の 4B 版(2560次元・36層・LastToken・Apache 2.0)。0.6B と同一アーキ。
+    /// safetensors は分割保存で f16 約 8GB(CPU の matmul が bf16 非対応のため f16 で読む)。
+    /// 用語集ベンチで **clusterF1 真ピーク 0.964(P=1.000・R=0.931・誤統合 0 件)** と全モデル
+    /// 中で群を抜く精度を既定閾値 70 ちょうどで達成。ただし推論は Candle CPU で ≈3.9 秒/語と
+    /// 極めて低速・約 8GB RAM 必須のため、**GPU・バッチ・オフライン等で速度を許容できる精度
+    /// 最優先用途向け**(`--model qwen3-4b`、詳細は `docs/benchmarks.md`)。
+    Qwen3Embedding4B,
+    /// Qwen/Qwen3-Embedding-8B(**Candle バックエンド専用・eval 用**)
+    ///
+    /// Qwen3-Embedding の 8B 版(4096次元・36層・LastToken・Apache 2.0)。4B と同一の読み込み
+    /// 経路(分割 safetensors・f16)。f16 でも約 16GB RAM を要し推論はさらに低速。十分な RAM の
+    /// 環境向けの検証用(詳細は `docs/benchmarks.md`)。
+    Qwen3Embedding8B,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -181,13 +214,16 @@ impl From<UserModel> for Model {
     }
 }
 
-/// プーリング方式(バックエンド非依存。E5/MiniLM は Mean、BGE/GTE は CLS)
+/// プーリング方式(バックエンド非依存。E5/MiniLM は Mean、BGE/GTE は CLS、
+/// Qwen3 等のデコーダ系埋め込みは末尾(EOS)トークンの LastToken)
 #[derive(Debug, Clone, Copy)]
 enum Pool {
     /// 先頭(CLS)トークンの隠れ状態を用いる
     Cls,
     /// attention mask による加重平均を用いる
     Mean,
+    /// 末尾(最後の実トークン=EOS)の隠れ状態を用いる(デコーダ系埋め込み)
+    LastToken,
 }
 
 /// モデルの実行バックエンドと重みの所在
@@ -311,10 +347,47 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "intfloat/multilingual-e5-large-instruct",
             // 指示対応 E5。対称類似度では同一の指示を両テキストに付与する。
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery: ",
-            // 暫定値(類義語ペア cos≈0.96 / 非類義 cos≈0.79 の観測に基づく)。
-            // 採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
-            cos_baseline: 0.78,
+            // ベンチで clusterF1 真ピーク(cos≈0.90)が既定閾値 70 に来るよう校正。
+            // 真ピークは 0.670 と gte(0.682)未満かつ真ピーク時の誤統合 38 件と多いため
+            // 既定には採用せず eval 用の選択肢に留める(詳細は docs/benchmarks.md)。
+            cos_baseline: 0.67,
             pooling: Pool::Mean,
+            backend: BackendKind::Candle {
+                weights_file: "model.safetensors",
+            },
+        },
+        // Candle バックエンド専用。Qwen3 デコーダ + last-token プーリング。
+        Model::UserDefined(UserModel::Qwen3Embedding0_6B) => ModelSpec {
+            hf_repo: "Qwen/Qwen3-Embedding-0.6B",
+            // Qwen3-Embedding 公式のクエリ書式。対称類似度では両テキストに同一指示を付与。
+            query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
+            // ベンチで clusterF1 真ピーク(cos≈0.91)が既定閾値 70 に来るよう校正。
+            cos_baseline: 0.69,
+            pooling: Pool::LastToken,
+            backend: BackendKind::Candle {
+                weights_file: "model.safetensors",
+            },
+        },
+        // Candle バックエンド専用・精度上限枠。4B 版(分割 safetensors・f16・約 8GB)。
+        Model::UserDefined(UserModel::Qwen3Embedding4B) => ModelSpec {
+            hf_repo: "Qwen/Qwen3-Embedding-4B",
+            query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
+            // ベンチで clusterF1 真ピーク 0.964 が既定閾値 70 ちょうどに来ることを確認済み。
+            cos_baseline: 0.69,
+            pooling: Pool::LastToken,
+            backend: BackendKind::Candle {
+                // 4B は分割保存。単一 `model.safetensors` が無ければ index.json から
+                // 全シャードを解決する(resolve_candle_weights)。
+                weights_file: "model.safetensors",
+            },
+        },
+        // Candle バックエンド専用・eval 用。8B 版(分割 safetensors・f16・約 16GB RAM)。
+        Model::UserDefined(UserModel::Qwen3Embedding8B) => ModelSpec {
+            hf_repo: "Qwen/Qwen3-Embedding-8B",
+            query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
+            // 暫定。十分な RAM の環境でベンチして既定閾値 70 に来るよう再校正する。
+            cos_baseline: 0.69,
+            pooling: Pool::LastToken,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",
             },
@@ -466,6 +539,13 @@ fn build_onnx_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result
     let pooling = match pool {
         Pool::Cls => Pooling::Cls,
         Pool::Mean => Pooling::Mean,
+        // fastembed(ONNX)は last-token プーリング非対応。LastToken を要するモデルは
+        // Candle バックエンド側で扱うため、ここに到達することはない。
+        Pool::LastToken => {
+            return Err(anyhow!(
+                "last-token プーリングは ONNX バックエンドでは非対応です(Candle が必要)"
+            ));
+        }
     };
     let user_model =
         UserDefinedEmbeddingModel::new(fetch(weights_file)?, tokenizer_files).with_pooling(pooling);
@@ -484,15 +564,45 @@ fn build_candle_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Resu
             .map_err(|e| anyhow!("{name} download failed: {e}"))?;
         Ok(std::fs::read(path)?)
     };
-    let weights = repo
-        .get(weights_file)
-        .map_err(|e| anyhow!("{weights_file} download failed: {e}"))?;
     Ok(Embedder::Candle(candle_backend::CandleEmbedder::new(
         &fetch("config.json")?,
         &fetch("tokenizer.json")?,
-        &weights,
+        &resolve_candle_weights(repo, weights_file)?,
         pool,
     )?))
+}
+
+/// Candle 用の safetensors の重みパスを解決する(単一ファイル or 分割シャード)
+///
+/// まず単一ファイル(`weights_file`)を試し、無ければ `model.safetensors.index.json` を
+/// 読んで全シャードを取得する(4B/8B のような大型モデルは分割保存される)。
+#[cfg(feature = "candle")]
+fn resolve_candle_weights(repo: &ApiRepo, weights_file: &str) -> Result<Vec<PathBuf>> {
+    if let Ok(p) = repo.get(weights_file) {
+        return Ok(vec![p]);
+    }
+    let index = repo
+        .get("model.safetensors.index.json")
+        .map_err(|e| anyhow!("{weights_file} も index.json も取得できません: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(index)?)?;
+    let map = json
+        .get("weight_map")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow!("index.json に weight_map がありません"))?;
+    // シャード名の重複を除いて順に取得する。
+    let mut shards: Vec<String> = map
+        .values()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    shards.sort();
+    shards.dedup();
+    shards
+        .iter()
+        .map(|name| {
+            repo.get(name)
+                .map_err(|e| anyhow!("{name} download failed: {e}"))
+        })
+        .collect()
 }
 
 impl Narashi {
@@ -834,7 +944,7 @@ mod tests {
         let emb = crate::candle_backend::CandleEmbedder::new(
             &cfg,
             &tok,
-            &p.join("model.safetensors"),
+            &[p.join("model.safetensors")],
             Pool::Mean,
         )
         .unwrap();
