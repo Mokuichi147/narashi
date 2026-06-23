@@ -87,9 +87,11 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 - `candle` のみでビルドすると、**ネイティブ ONNX Runtime バイナリを取得できない環境**(オフライン・制限ネットワーク等)でも動作します:
 
   ```sh
-  cargo install narashi --no-default-features --features candle
+  cargo install narashi --no-default-features --features candle,cli
   # 既定モデルは e5-instruct になります
   ```
+
+ライブラリとして使うだけなら `cli` を外して `clap` 依存を省けます(例: `default-features = false, features = ["candle"]`)。
 
 キャッシュディレクトリは環境変数 `NARASHI_CACHE_DIR` でも指定できます:
 
