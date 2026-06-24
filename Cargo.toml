@@ -39,6 +39,13 @@ onnx = ["dep:fastembed"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:serde_json"]
 # CLI バイナリ(`narashi` コマンド)。ライブラリとして使うだけなら無効にして `clap` 依存を外せる。
 cli = ["dep:clap"]
+# Apple GPU(Metal)で Candle を実行する。Apple Silicon で利用可能。GPU では f16 matmul も
+# 使えるため、CPU で f16 が遅い Qwen3 4B/8B で特に効く可能性がある。MLX は candle にバック
+# エンドが無いため非対応(Apple GPU は Metal 経由)。macOS 専用・opt-in。
+metal = ["candle", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# NVIDIA GPU(CUDA)で Candle を実行する。CUDA Toolkit が必要で NVIDIA GPU 搭載機(Linux/
+# Windows)向け。macOS では使えない。opt-in。
+cuda = ["candle", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dependencies]
 fastembed = { version = "4", optional = true }
