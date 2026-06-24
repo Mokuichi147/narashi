@@ -86,12 +86,12 @@ export ORT_LIB_LOCATION=/tmp/ortlib/onnxruntime \
 
 # 素性能サマリ + 5 刻みスイープ
 cargo run --example benchmark                  # 既定 (bge-m3)
-cargo run --example benchmark -- bge-m3        # bge-m3(既定・clusterF1最高0.725・誤統合最小・fp16単一ONNX)
+cargo run --example benchmark -- bge-m3        # bge-m3(既定・ONNX勢でclusterF1最高0.699・誤統合最小7件・fp16単一ONNX)
 cargo run --example benchmark -- gte           # gte-multilingual-base(速度重視の代替・高適合率)
 cargo run --example benchmark -- granite-278m  # granite-278m(clusterF1高め・誤統合多め)
 cargo run --example benchmark -- arctic-l      # snowflake-arctic-embed-l-v2.0(検索特化・低調・eval用)
-cargo run --example benchmark -- qwen3         # Qwen3-Embedding-0.6B(Candle・last-token・clusterF1 0.748・低速)
-cargo run --example benchmark -- qwen3-4b      # Qwen3-Embedding-4B(Candle・f16・clusterF1最高0.964・超低速≈3.9秒/語・約8GB RAM)
+cargo run --example benchmark -- qwen3         # Qwen3-Embedding-0.6B(Candle・last-token・clusterF1 0.764・低速)
+cargo run --example benchmark -- qwen3-4b      # Qwen3-Embedding-4B(Candle・f16・clusterF1最高0.956・超低速≈3.9秒/語・約8GB RAM)
 cargo run --example benchmark -- qwen3-8b      # Qwen3-Embedding-8B(Candle・f16・約16GB RAM 必須・要十分なRAM)
 cargo run --example benchmark -- e5-instruct   # multilingual-e5-large-instruct(Candle・見送り・誤統合多め)
 cargo run --example benchmark -- granite-107m  # granite-107m(R1 軽量・eval用)
@@ -224,35 +224,36 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 最新の数値・採用判断は `docs/benchmarks.md` を一次情報とする(本節は要約のみ)。比較は **clusterF1 真
 ピーク**(各モデルの最適閾値での値)で行う:
 - **精度の絶対最高は Qwen3-Embedding-4B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
-  **0.964(P=1.000・R=0.931・誤統合 0 件)を既定閾値 70 ちょうどで達成**し全モデルを大きく引き離す。弱点は
-  速度/RAM のみ(Candle CPU・f16・1 件ずつ前向き計算・≈3.9 秒/語・約 8GB RAM)。GPU・バッチ・オフライン等で
-  速度を許容できる精度最優先用途向け(`--model qwen3-4b`・`cos_baseline=0.69`)。8B は同経路だが約 16GB RAM 必須で
-  本環境では未測定(`--model qwen3-8b`)。
-- **その中間が Qwen3-Embedding-0.6B**(Candle・Apache 2.0・last-token)。clusterF1 真ピーク 0.748・P=0.984・
-  誤統合 1 件で bge-m3(0.725)を精度で上回る。≈200ms/語と 4B よりは軽い。ONNX 非依存環境向け(`--model qwen3`・
+  **0.956(P=0.963・R=0.948・誤統合 7 件)**で全モデルを引き離す(v1 では P=1.000・誤統合 0 と「完璧」だったが、
+  難化した v2 で `保証⇔保障` などを誤統合し頭打ちが解消)。弱点は速度/RAM(Candle CPU・f16・≈3.9 秒/語・約 8GB RAM)。
+  GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け(`--model qwen3-4b`・`cos_baseline=0.69`)。8B は
+  約 16GB RAM 必須で本環境では未測定(`--model qwen3-8b`)。
+- **その中間が Qwen3-Embedding-0.6B**(Candle・Apache 2.0・last-token)。clusterF1 真ピーク 0.764・P=0.926・
+  誤統合 10 件で bge-m3(0.699)を精度で上回る。≈200ms/語と 4B よりは軽い。ONNX 非依存環境向け(`--model qwen3`・
   `cos_baseline=0.69`・Candle 単独ビルドでは既定)。
-- **総合の既定は bge-m3**(精度・速度・安全性のバランス)。clusterF1 真ピーク **0.725**だが、ピーク時
-  P=0.983・誤統合わずか 1 件と**誤統合は最小タイ**で、ONNX により Qwen3 の約 12 倍高速(≈16ms/語)。
-  「高 clusterF1 は誤統合増と引き換え」(granite-278m は 0.705 だが誤統合 24 件)というトレードオフを破り、
-  精度・安全性・サイズ(1.06GB)で gte を上回る。`BAAI/bge-m3` の **fp16 単一 ONNX**(`Xenova/bge-m3`・
-  `cos_baseline=0.072`)をユーザー定義モデルとして読み込む。
-- **速度重視の代替は gte-multilingual-base**。真ピーク 0.682・純粋分類 best-F1=0.776 が最良・ピーク時
-  P=0.782、推論は bge-m3 の約 1/3(≈5ms/語)。約 1.2GB・`cos_baseline=0.42`。
+- **総合の既定は bge-m3**(精度・速度・安全性のバランス)。clusterF1 真ピーク **0.699 は ONNX 勢で最高**、ピーク時
+  P=0.939・**誤統合わずか 7 件は強モデル中で最小**で、ONNX により Qwen3 の約 12 倍高速(≈16ms/語)。
+  「高 clusterF1 は誤統合増と引き換え」(granite-278m は 0.682 だが誤統合 28 件)というトレードオフを破り、
+  精度・安全性・サイズ(1.06GB)で gte(0.657 / 誤統合 27 件)を上回る。`BAAI/bge-m3` の **fp16 単一 ONNX**
+  (`Xenova/bge-m3`・`cos_baseline=0.072`)をユーザー定義モデルとして読み込む。
+- **速度重視の代替は gte-multilingual-base**。真ピーク 0.657・推論は bge-m3 の約 1/3(≈5ms/語)だが誤統合 27 件と
+  多め。約 1.2GB・`cos_baseline=0.42`。
 - **clusterF1/再現率を最優先するなら granite-278m-multilingual**(IBM Granite Embedding R1・Apache 2.0)。
-  clusterF1 真ピーク 0.705(bge-m3 に次ぐ 2 位)・日本語は明示学習。ただし真ピーク時の誤統合 24 件で「猫=犬」型の
+  clusterF1 真ピーク 0.682(bge-m3 に次ぐ)・日本語は明示学習。ただし真ピーク時の誤統合 28 件で「猫=犬」型の
   データ破壊が増えるため選択肢に留める(`--model granite`・`cos_baseline=0.44`)。
-- **軽量代替の第一候補は distiluse-multilingual-v2**(真ピーク 0.667・最小サイズ 0.54GB・最速級)。
-- **e5-small はなお保守枠**(最軽量・最速・ピーク時 P=1.000)。e5-large は 0.644 だが約 8 倍遅い。
-  e5-base は劣後。paraphrase 系は真ピーク 0.62 前後でピークが高閾値側。量子化版は現環境で実行不可。
-- granite の 278m 以外(311m-r2:0.663 / 107m:0.652 / 97m-r2:0.551)は gte 未満で不採用(eval から選択可)。
+- **軽量代替の第一候補は distiluse-multilingual-v2**(真ピーク 0.662・誤統合 12 件・最小サイズ 0.54GB・最速級)。
+  v2 では clusterF1・誤統合とも gte を上回る。ただし単漢字かな(`猫⇔ねこ`)の難正例は取りこぼす。
+- **e5-small はなお保守枠**(最軽量・最速・ピーク時 P=0.853・誤統合 14 件)。e5-large は 0.638 だが約 8 倍遅い。
+  e5-base は劣後(0.514)。paraphrase 系は真ピーク 0.59/0.57 でピークが高閾値側・誤統合多め。量子化版は現環境で実行不可。
+- granite の 278m 以外(311m-r2:0.652 / 107m:0.652 / 97m-r2:0.537)は誤統合が多く不採用(eval から選択可)。
 - **大型枠の突破口**: fp16 単一 ONNX(≤2GB)を使えば外部重み付き大型モデルも評価可能。bge-m3 はこの方法で
-  評価し採用した。一方 snowflake-arctic-embed-l-v2.0(fp16・0.510)は検索特化で低調・見送り(eval から選択可)。
+  評価し採用した。一方 snowflake-arctic-embed-l-v2.0(fp16・真ピーク 0.495)は検索特化で低調・見送り(eval から選択可)。
 - snowflake-arctic-embed-m-v2.0【非推奨】・LaBSE【見送り】はコードに組み込まず結果のみ記録。
 - 別系統(BGE-zh / 英語 MiniLM / CLIP)は本データで大きく劣り、多言語特化が必須と確認。
 - **Candle バックエンドで評価できるようになったモデル**: e5-large-instruct(XLM-RoBERTa・外部重み付き ONNX
-  しか無く従来不可→ Candle で評価→ clusterF1 0.670・誤統合 38 件で**見送り**)、Qwen3-Embedding(last-token
-  プーリングで fastembed 非対応→ Candle に実装。**0.6B で 0.748、4B(分割保存・f16・約 8GB)で clusterF1 0.964・
-  P=1.000・誤統合 0 件と全モデル中最高**→ いずれも**採用**。8B は約 16GB RAM 必須で本環境では未測定)。
+  しか無く従来不可→ Candle で評価→ clusterF1 0.645・誤統合 75 件で**見送り**)、Qwen3-Embedding(last-token
+  プーリングで fastembed 非対応→ Candle に実装。**0.6B で 0.764、4B(分割保存・f16・約 8GB)で clusterF1 0.956・
+  P=0.963・誤統合 7 件と全モデル中最高**→ いずれも**採用**。8B は約 16GB RAM 必須で本環境では未測定)。
 - 評価対象外(現状): jina-v3(CC-BY-NC・ライセンス非寛容)・ruri-base(BertJapaneseTokenizer が MeCab/unidic
   依存で `tokenizer.json` 非配布。BertModel は Candle で読めるが純 Rust では形態素解析器が別途必要)・
   gte-Qwen2-7B / e5-mistral-7b 等(last-token だが 7〜8B 級で Candle CPU では非現実的)。詳細は benchmarks 参照。

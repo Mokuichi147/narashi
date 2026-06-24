@@ -11,7 +11,7 @@
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
 - **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
-- **モデル選択**: 既定は用語集ベンチマーク(日英中混在)で clusterF1 が最高(0.725)かつ誤統合も最小の `bge-m3`。速度を優先するなら `--model gte`(約 1/3 の推論時間)、軽量・最速を優先するなら他モデルへ `--model` で切替可能(選択肢は下の[オプション](#オプション)表、詳細な比較は [`docs/benchmarks.md`](docs/benchmarks.md))
+- **モデル選択**: 既定は用語集ベンチマーク(日英中混在・難正例/難負例を含む v2 データセット)で ONNX 勢の clusterF1 が最高(0.699)かつ誤統合も最小(7 件)の `bge-m3`。速度を優先するなら `--model gte`(約 1/3 の推論時間)、軽量・最速を優先するなら他モデルへ `--model` で切替可能(選択肢は下の[オプション](#オプション)表、詳細な比較は [`docs/benchmarks.md`](docs/benchmarks.md))
 
 ## インストール
 
@@ -62,19 +62,19 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
 | 値 | モデル | 次元 | 特徴 |
 | --- | --- | ---: | --- |
-| `bge-m3` | bge-m3 | 1024 | **既定**。clusterF1 最高(0.725)かつ誤統合も最小(1 件)。約 1.06GB・推論は gte の約 3 倍 |
-| `gte` | gte-multilingual-base | 768 | 速度重視の代替。高適合率・CJK に強い・約 1.2GB(bge-m3 の約 1/3 の推論時間) |
-| `granite` | granite-embedding-278m-multilingual | 768 | clusterF1 高め(0.705)・日本語明示学習だが誤統合は多め。約 1.1GB |
-| `distiluse` | distiluse-base-multilingual-cased-v2 | 768 | 軽量代替の第一候補。高適合率・約 0.54GB・最速級 |
-| `small` | multilingual-e5-small | 384 | 最軽量・最保守(高適合率・約 0.45GB)。サイズ/速度を最優先する場合 |
-| `large` | multilingual-e5-large | 1024 | E5 系で最高精度だが低速で gte に劣後 |
-| `base` | multilingual-e5-base | 768 | small に劣後・非推奨 |
-| `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | 高再現率。要 高め閾値(~88) |
-| `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | 再現率最優先。要 高め閾値(~87) |
+| `bge-m3` | bge-m3 | 1024 | **既定**。ONNX 勢で clusterF1 最高(0.699)かつ誤統合も最小(7 件)。約 1.06GB・推論は gte の約 3 倍 |
+| `gte` | gte-multilingual-base | 768 | 速度重視の代替。CJK に強い・約 1.2GB(bge-m3 の約 1/3 の推論時間)。clusterF1 0.657・誤統合はやや多め(27 件) |
+| `granite` | granite-embedding-278m-multilingual | 768 | clusterF1 高め(0.682)・日本語明示学習だが誤統合は多め(28 件)。約 1.1GB |
+| `distiluse` | distiluse-base-multilingual-cased-v2 | 768 | 軽量代替の第一候補。clusterF1 0.662・高適合率・約 0.54GB・最速級 |
+| `small` | multilingual-e5-small | 384 | 最軽量・最保守(clusterF1 0.561・高適合率・誤統合最少級 14 件・約 0.45GB)。サイズ/速度を最優先する場合 |
+| `large` | multilingual-e5-large | 1024 | E5 系で最高精度(0.638)だが低速で gte に劣後 |
+| `base` | multilingual-e5-base | 768 | small に劣後(0.514)・非推奨 |
+| `paraphrase` | paraphrase-multilingual-MiniLM-L12-v2 | 384 | clusterF1 0.591。要 高め閾値(~89) |
+| `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | clusterF1 0.567。要 高め閾値(~86) |
 | `paraphrase-q` | paraphrase MiniLM 量子化版 | 384 | 高速だが現環境の ONNX Runtime では実行時エラー |
-| `e5-instruct` | multilingual-e5-large-instruct | 1024 | **Candle バックエンド**。外部重み付き ONNX で従来は利用できなかった指示対応 E5。clusterF1 真ピーク 0.670(gte 未満)・誤統合 38 件と多く Candle CPU で低速のため既定には非推奨だが、ONNX 非依存環境向けの選択肢。約 1.1GB |
-| `qwen3` | Qwen3-Embedding-0.6B | 1024 | **Candle バックエンド**(last-token プーリング)。clusterF1 0.748・誤統合 1 件と高精度。デコーダ系で Candle CPU の推論が bge-m3 の約 12 倍と低速のため既定にはせず、精度重視/ONNX 非依存環境向け。約 1.2GB |
-| `qwen3-4b` | Qwen3-Embedding-4B | 2560 | **Candle バックエンド**(last-token・f16)。**clusterF1 0.964(P=1.000・誤統合 0 件)で全モデル中ぶっちぎりの最高精度**。ただし推論が ≈3.9 秒/語と極めて低速・約 8GB RAM 必須のため、GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け。約 8GB |
+| `e5-instruct` | multilingual-e5-large-instruct | 1024 | **Candle バックエンド**。外部重み付き ONNX で従来は利用できなかった指示対応 E5。clusterF1 真ピーク 0.645(gte 未満)・誤統合 75 件と最多で Candle CPU で低速のため既定には非推奨だが、ONNX 非依存環境向けの選択肢。約 1.1GB |
+| `qwen3` | Qwen3-Embedding-0.6B | 1024 | **Candle バックエンド**(last-token プーリング)。clusterF1 0.764・誤統合 10 件で bge-m3 を精度で上回る。デコーダ系で Candle CPU の推論が bge-m3 の約 12 倍と低速のため既定にはせず、精度重視/ONNX 非依存環境向け。約 1.2GB |
+| `qwen3-4b` | Qwen3-Embedding-4B | 2560 | **Candle バックエンド**(last-token・f16)。**clusterF1 0.956(P=0.963・誤統合 7 件)で全モデル中最高精度**。ただし推論が ≈3.9 秒/語と極めて低速・約 8GB RAM 必須のため、GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け。約 8GB |
 | `qwen3-8b` | Qwen3-Embedding-8B | 4096 | **Candle バックエンド**(eval 用)。4B と同経路。約 16GB RAM 必須でさらに低速。十分な RAM の環境での検証用 |
 
 ### 実行バックエンド(フィーチャ)
