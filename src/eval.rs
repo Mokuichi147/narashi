@@ -257,6 +257,22 @@ pub fn sweep(n: &Narashi, glossary: &Glossary, thresholds: &[f32]) -> Result<Vec
     Ok(sweep_from_scored(num, &scored, thresholds))
 }
 
+/// 全ペアを `(語 a, 語 b, 正例フラグ, スコア)` で返す(難易度分析・ダンプ用)。
+///
+/// 「全モデルが正解してしまう簡単すぎるペア(= スコアの底上げ要因)」を横断的に洗い出す
+/// ための生データ。埋め込みは 1 度だけ計算する。
+pub fn all_scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<Vec<NamedPairLabeled>> {
+    let (terms, _) = glossary.flatten();
+    let (_, scored) = scored_pairs(n, glossary)?;
+    Ok(scored
+        .into_iter()
+        .map(|(i, j, s, positive)| (terms[i].clone(), terms[j].clone(), positive, s))
+        .collect())
+}
+
+/// `(語 a, 語 b, 正例フラグ, スコア)`
+pub type NamedPairLabeled = (String, String, bool, f32);
+
 /// 全要素を独立成分とし、閾値以上のペアを連結した連結成分の代表を返す。
 ///
 /// `normalize` の閾値統合と同じ分割を、再埋め込みせず添字付きスコアから再現する
