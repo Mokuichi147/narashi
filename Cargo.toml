@@ -23,6 +23,12 @@ required-features = ["onnx"]
 name = "fine_sweep"
 required-features = ["onnx"]
 
+# Candle バックエンド専用の評価 example(ORT 不要)。ONNX Runtime バイナリを
+# 取得できない環境で qwen3 / e5-instruct 等の Candle モデルだけを計測する。
+[[example]]
+name = "candle_eval"
+required-features = ["candle"]
+
 [features]
 default = ["onnx", "candle", "cli"]
 # ONNX Runtime バックエンド(fastembed)。組み込みカタログと Xenova/ONNX 変換モデルを扱う。

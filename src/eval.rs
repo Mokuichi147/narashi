@@ -157,6 +157,9 @@ pub struct SweepRow {
     pub false_merges: usize,
 }
 
+/// スコア付きの語ペア (表示用)。`(語 a, 語 b, スコア)`
+pub type NamedPair = (String, String, f32);
+
 /// 1 モデル分のベンチマーク結果 (共通スペック)
 #[derive(Debug, Clone)]
 pub struct Benchmark {
@@ -167,8 +170,19 @@ pub struct Benchmark {
     pub clustering: Clustering,
     /// 複数閾値での挙動 (既定閾値以外も含む)
     pub sweep: Vec<SweepRow>,
+    /// **最難負例**: 異グループなのにスコアが高い(= 最も誤統合しやすい)負例ペアの上位。
+    /// 閾値非依存で、上位モデルほどここのスコアが低い。飽和したベンチマークでも
+    /// 「適合率の境界」を直接見分けられる比較軸。スコア降順。
+    pub hardest_negatives: Vec<NamedPair>,
+    /// **最難正例**: 同グループなのにスコアが低い(= 最も取りこぼしやすい)正例ペアの下位。
+    /// 閾値非依存で、上位モデルほどここのスコアが高い。「再現率の境界」を直接見分ける。
+    /// スコア昇順。
+    pub hardest_positives: Vec<NamedPair>,
     pub speed: Speed,
 }
+
+/// 最難ペアとして保持・表示する件数 (負例・正例それぞれ)
+pub const HARDEST_PAIRS: usize = 10;
 
 /// 既定でスイープする閾値 (50〜95 を 5 刻み)
 pub const SWEEP_THRESHOLDS: &[f32] = &[50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0];
@@ -466,12 +480,26 @@ pub fn evaluate_with_load(
     // 各閾値で分類 F1 とクラスタ F1 (推移閉包込み) を再埋め込みせず算出する。
     let sweep = sweep_from_scored(num, &scored, SWEEP_THRESHOLDS);
 
+    // --- 最難ペア (閾値非依存の境界可視化) ---
+    // 負例: スコア降順の上位 = 最も誤統合しやすい(適合率の境界)。
+    // 正例: スコア昇順の下位 = 最も取りこぼしやすい(再現率の境界)。
+    // 飽和したベンチマークでも上位モデル同士の差がここに残るため、比較の主軸にする。
+    let mut neg: Vec<&ScoredPair> = scored.iter().filter(|p| !p.3).collect();
+    let mut pos: Vec<&ScoredPair> = scored.iter().filter(|p| p.3).collect();
+    neg.sort_by(|a, b| b.2.total_cmp(&a.2));
+    pos.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let to_named = |p: &&ScoredPair| (terms[p.0].clone(), terms[p.1].clone(), p.2);
+    let hardest_negatives: Vec<NamedPair> = neg.iter().take(HARDEST_PAIRS).map(to_named).collect();
+    let hardest_positives: Vec<NamedPair> = pos.iter().take(HARDEST_PAIRS).map(to_named).collect();
+
     Ok(Benchmark {
         model: model.to_string(),
         classification,
         scan,
         clustering,
         sweep,
+        hardest_negatives,
+        hardest_positives,
         speed: Speed {
             load_ms,
             embed_ms,
@@ -567,6 +595,28 @@ impl fmt::Display for Benchmark {
                 row.false_merges
             )?;
         }
+        writeln!(
+            f,
+            "-- 最難負例 (誤統合しやすい順・閾値非依存。上位モデルほどスコアが低い) --"
+        )?;
+        if self.hardest_negatives.is_empty() {
+            writeln!(f, "  (なし)")?;
+        } else {
+            for (a, b, s) in &self.hardest_negatives {
+                writeln!(f, "  {s:>5.1}  {a} ⇔ {b}")?;
+            }
+        }
+        writeln!(
+            f,
+            "-- 最難正例 (取りこぼしやすい順・閾値非依存。上位モデルほどスコアが高い) --"
+        )?;
+        if self.hardest_positives.is_empty() {
+            writeln!(f, "  (なし)")?;
+        } else {
+            for (a, b, s) in &self.hardest_positives {
+                writeln!(f, "  {s:>5.1}  {a} ⇔ {b}")?;
+            }
+        }
         writeln!(f, "-- 速度 --")?;
         write!(
             f,
@@ -602,6 +652,47 @@ mod tests {
         let g = default_glossary();
         assert!(g.groups.len() >= 5, "groups: {}", g.groups.len());
         assert!(g.term_count() >= 10);
+    }
+
+    #[test]
+    fn default_glossary_has_no_duplicate_terms() {
+        // 同じ語が複数グループに現れると正解ラベルが壊れる(本来統合すべきペアが
+        // 別グループ扱いで負例化する、など)。データ拡張時の事故を検知する。
+        let g = default_glossary();
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (gid, group) in g.groups.iter().enumerate() {
+            for term in group {
+                if let Some(prev) = seen.insert(term.as_str(), gid) {
+                    panic!("用語 {term:?} がグループ {prev} と {gid} に重複しています");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_glossary_has_hard_cases() {
+        // 飽和対策で導入した難所(難正例・難負例)が含まれていることを保証する。
+        // 難負例の共下位語・対義語は単独グループ、難正例は多言語混在の同義グループ。
+        let g = default_glossary();
+        let flat: Vec<&str> = g.groups.iter().flatten().map(String::as_str).collect();
+        // 難正例(表層が重ならない同義語)
+        for t in ["便所", "restroom", "厕所"] {
+            assert!(flat.contains(&t), "難正例 {t} が見つかりません");
+        }
+        // 難負例(共下位語・紛らわしい異義語・対義語)
+        for t in ["春", "夏", "科学", "化学", "増加", "減少"] {
+            assert!(flat.contains(&t), "難負例 {t} が見つかりません");
+        }
+        // 難負例は単独グループ(誤って同義グループに入れていないこと)
+        let singletons: std::collections::HashSet<&str> = g
+            .groups
+            .iter()
+            .filter(|grp| grp.len() == 1)
+            .map(|grp| grp[0].as_str())
+            .collect();
+        for t in ["春", "科学", "増加"] {
+            assert!(singletons.contains(&t), "{t} は単独語(難負例)であるべき");
+        }
     }
 
     #[test]
