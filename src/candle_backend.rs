@@ -19,6 +19,23 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use tokenizers::Tokenizer;
 
+/// 実行デバイスを選ぶ。GPU 機能が有効でデバイスを取得できれば GPU、無ければ CPU。
+///
+/// `metal`(Apple GPU)/ `cuda`(NVIDIA GPU)フィーチャが有効なときだけ GPU を試み、
+/// 取得に失敗したら CPU へフォールバックする。MLX は candle にバックエンドが無いため
+/// 非対応(Apple GPU は Metal 経由)。CUDA は NVIDIA 専用で macOS では使えない。
+fn select_device() -> Device {
+    #[cfg(feature = "metal")]
+    if let Ok(d) = Device::new_metal(0) {
+        return d;
+    }
+    #[cfg(feature = "cuda")]
+    if let Ok(d) = Device::new_cuda(0) {
+        return d;
+    }
+    Device::Cpu
+}
+
 /// Qwen3 の計算精度をモデルサイズで選ぶ。
 ///
 /// candle の CPU バックエンドは **bf16 の matmul 非対応**なので bf16 は使えない。
@@ -71,7 +88,7 @@ impl CandleEmbedder {
         weights: &[std::path::PathBuf],
         pool: Pool,
     ) -> Result<Self> {
-        let device = Device::Cpu;
+        let device = select_device();
         let tokenizer = Tokenizer::from_bytes(tokenizer_json)
             .map_err(|e| anyhow!("tokenizer load failed: {e}"))?;
         // `model_type` でアーキテクチャを判定する(serde derive を増やさず Value で読む)。
@@ -125,24 +142,38 @@ impl CandleEmbedder {
     ///
     /// 正規化は呼び出し側([`crate::Narashi::embed_normalized`])で行う。
     ///
-    /// candle の CPU バックエンドはバッチ(>1)に難があり 1 件ずつ前向き計算する
-    /// (Qwen3 は因果マスク broadcast バグ、XLM も実装が単純化される)。代わりに
-    /// **テキスト単位を rayon で並列化**してスループットを稼ぐ。candle の matmul は
-    /// `gemm` を `Parallelism::Rayon(num_cpus)` で呼び **rayon のグローバルプールを
-    /// 共有**するため、外側 `par_iter` と内側 matmul は同じスレッド群を work-stealing
-    /// で奪い合うだけでスレッド過剰割り当て(oversubscription)にはならない。短い
-    /// 用語のように 1 件の matmul が全コアを使い切れない入力で特に効く。
-    /// `par_iter` は `IndexedParallelIterator` なので結果の順序は入力順を保つ。
+    /// candle はバッチ(>1)に難があり 1 件ずつ前向き計算する(Qwen3 は CPU バックエンドの
+    /// 因果マスク broadcast バグ、XLM も実装が単純化される)。スループットはデバイスに応じて
+    /// 稼ぎ方を変える:
+    ///
+    /// - **CPU**: テキスト単位を rayon で並列化する。candle の matmul は `gemm` を
+    ///   `Parallelism::Rayon(num_cpus)` で呼び **rayon のグローバルプールを共有**するため、
+    ///   外側 `par_iter` と内側 matmul は同じスレッド群を work-stealing で奪い合うだけで
+    ///   スレッド過剰割り当て(oversubscription)にはならない。短い用語のように 1 件の
+    ///   matmul が全コアを使い切れない入力で特に効く。
+    /// - **GPU(Metal/CUDA)**: 単一コマンドキューを複数スレッドから叩くと内部ロックで
+    ///   直列化するだけなので **逐次**で回す(行列演算は GPU 内で並列化される)。
+    ///
+    /// いずれも入力順を保って収集する(`par_iter` は `IndexedParallelIterator`)。
     pub(crate) fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let on_gpu = self.device.is_metal() || self.device.is_cuda();
         match &self.backend {
-            Backend::XlmRoberta(model) => texts
-                .par_iter()
-                .map(|t| self.embed_xlm(model, t))
-                .collect(),
-            Backend::Qwen3 { template } => texts
-                .par_iter()
-                .map(|t| self.embed_qwen3(template, t))
-                .collect(),
+            Backend::XlmRoberta(model) => {
+                let f = |t: &String| self.embed_xlm(model, t);
+                if on_gpu {
+                    texts.iter().map(f).collect()
+                } else {
+                    texts.par_iter().map(f).collect()
+                }
+            }
+            Backend::Qwen3 { template } => {
+                let f = |t: &String| self.embed_qwen3(template, t);
+                if on_gpu {
+                    texts.iter().map(f).collect()
+                } else {
+                    texts.par_iter().map(f).collect()
+                }
+            }
         }
     }
 
