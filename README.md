@@ -91,7 +91,7 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
   ```sh
   cargo install narashi --no-default-features --features candle,cli
-  # 既定モデルは qwen3(Candle 勢で最高精度)になります
+  # 既定モデルは qwen3(Qwen3-Embedding-0.6B)に自動で切り替わります
   ```
 
 ライブラリとして使うだけなら `cli` を外して `clap` 依存を省けます(例: `default-features = false, features = ["candle"]`)。

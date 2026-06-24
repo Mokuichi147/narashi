@@ -89,7 +89,14 @@ pub mod eval;
 /// バッチ用途では問題にならないが、速度重視なら `--model gte`(約 1/3 の推論時間・
 /// clusterF1 0.657)へ、軽量重視なら `--model distiluse`(約 0.54GB)/ `--model small`
 /// (約 0.45GB)へ切り替えられる。詳細は `docs/benchmarks.md` を参照。
+#[cfg(feature = "onnx")]
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
+
+/// ONNX Runtime を取得できない環境(`--no-default-features --features candle`)向けの既定モデル。
+/// bge-m3 は ONNX バックエンド専用のため、Candle 単独ビルドでは Candle 系の Qwen3-Embedding-0.6B を
+/// 既定にすることで、モデル未指定でもそのまま動作できるようにする。
+#[cfg(all(not(feature = "onnx"), feature = "candle"))]
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding0_6B);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
