@@ -96,6 +96,36 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
 ライブラリとして使うだけなら `cli` を外して `clap` 依存を省けます(例: `default-features = false, features = ["candle"]`)。
 
+### GPU(Metal / CUDA)で Candle を実行する
+
+Candle モデル(`qwen3` / `qwen3-4b` / `qwen3-8b` / `e5-instruct`)は GPU で実行できます。GPU は既定では無効で、`metal`(Apple GPU)または `cuda`(NVIDIA GPU)フィーチャを **opt-in** で有効化します。GPU では f16 の matmul が使えるため、CPU で f16 が遅い Qwen3 4B/8B で特に効きます。
+
+| フィーチャ | バックエンド | 対象 | 前提 |
+| --- | --- | --- | --- |
+| `metal` | Apple GPU(Metal) | Apple Silicon の macOS | macOS 専用。MLX は candle にバックエンドが無いため非対応(Apple GPU は Metal 経由) |
+| `cuda` | NVIDIA GPU(CUDA) | NVIDIA GPU 搭載の Linux / Windows | CUDA Toolkit が必要。macOS では使えない |
+
+```sh
+# Apple Silicon(Metal)で GPU を使う
+cargo install narashi --features metal
+
+# NVIDIA GPU(CUDA)で GPU を使う
+cargo install narashi --features cuda
+```
+
+ソースからビルドする場合も同様に `--features` で指定します:
+
+```sh
+cargo build --release --features metal   # または cuda
+cargo run --release --features metal -- "白い背景" "白背景"
+```
+
+- GPU フィーチャは内部で `candle` を含むため、別途 `candle` を指定する必要はありません。
+- 実行時に GPU デバイスの取得に失敗した場合は、自動的に CPU へフォールバックします(`select_device`)。
+- ONNX バックエンド(`onnx` 既定)で動くモデルは GPU フィーチャの影響を受けません。GPU は Candle 経路のモデルにのみ作用します。
+
+> Apple Silicon での計測では、Metal は Candle CPU 並列の約 1.8 倍速。バッチ化は candle 側の制約により未対応です。
+
 キャッシュディレクトリは環境変数 `NARASHI_CACHE_DIR` でも指定できます:
 
 ```sh
@@ -128,7 +158,7 @@ $ rm -rf /path/to/cache                # --cache-dir で指定したとき
 
 ```toml
 [dependencies]
-narashi = "0.3"
+narashi = "0.4"
 ```
 
 ### 類似度の算出
