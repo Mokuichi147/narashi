@@ -11,13 +11,13 @@ use std::path::PathBuf;
 /// 有効なビルドでのみ選択できる(既定ビルドは両方有効)。
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum ModelArg {
-    /// bge-m3 (既定・clusterF1最高0.725で誤統合も最小・1024次元・約1.06GB・約3倍低速)
+    /// bge-m3 (既定・ONNX勢でclusterF1最高0.699・誤統合も最小7件・1024次元・約1.06GB・約3倍低速)
     #[cfg(feature = "onnx")]
     BgeM3,
     /// gte-multilingual-base (高適合率・CJKに強い・速度重視の代替・768次元・約1.2GB)
     #[cfg(feature = "onnx")]
     Gte,
-    /// granite-278m-multilingual (clusterF1高め0.705だが誤統合が多め・日本語明示学習・768次元・約1.1GB)
+    /// granite-278m-multilingual (clusterF1高め0.682だが誤統合が多め28件・日本語明示学習・768次元・約1.1GB)
     #[cfg(feature = "onnx")]
     Granite,
     /// distiluse-multilingual-v2 (軽量代替・高適合率・約0.54GB)
@@ -41,13 +41,13 @@ enum ModelArg {
     /// paraphrase-multilingual-MiniLM-L12-v2 量子化版 (高速)
     #[cfg(feature = "onnx")]
     ParaphraseQ,
-    /// multilingual-e5-large-instruct (Candle・ONNX非依存環境向け・clusterF1 0.670で誤統合多め・低速・1024次元)
+    /// multilingual-e5-large-instruct (Candle・ONNX非依存環境向け・clusterF1 0.645で誤統合最多75件・低速・1024次元)
     #[cfg(feature = "candle")]
     E5Instruct,
-    /// Qwen3-Embedding-0.6B (Candle・clusterF1 0.748で誤統合最小だが低速・1024次元・精度最優先/ONNX非依存向け)
+    /// Qwen3-Embedding-0.6B (Candle・clusterF1 0.764でbge-m3超だが低速・1024次元・精度最優先/ONNX非依存向け)
     #[cfg(feature = "candle")]
     Qwen3,
-    /// Qwen3-Embedding-4B (Candle・clusterF1最高0.964でほぼ完璧だが超低速≈3.9秒/語・約8GB RAM・GPU/バッチ向け)
+    /// Qwen3-Embedding-4B (Candle・clusterF1最高0.956・誤統合7件だが超低速≈3.9秒/語・約8GB RAM・GPU/バッチ向け)
     #[cfg(feature = "candle")]
     #[value(name = "qwen3-4b")]
     Qwen34b,
@@ -58,7 +58,7 @@ enum ModelArg {
 }
 
 /// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら Qwen3-Embedding
-/// (Candle 勢では clusterF1 最高 0.748・誤統合最小で最良。e5-instruct より精度・安全性が高い)。
+/// (Candle 勢では clusterF1 最高 0.764・誤統合少で最良。e5-instruct より精度・安全性が高い)。
 #[cfg(feature = "onnx")]
 const DEFAULT_MODEL_ARG: ModelArg = ModelArg::BgeM3;
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]

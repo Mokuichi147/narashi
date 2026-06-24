@@ -79,15 +79,15 @@ pub mod eval;
 
 /// 既定の埋め込みモデル(bge-m3)
 ///
-/// 用語集ベンチマーク(日本語・英語・中国語混在)で **clusterF1 真ピーク 0.725 が
-/// 全モデル中で最高**、かつピーク時適合率 P=0.983・誤統合わずか 1 件と**最も誤統合が
-/// 少ない**。精度(clusterF1)・誤統合の少なさ・サイズ(約 1.06GB)のすべてで従来既定の
-/// gte(0.682 / 誤統合 17 件 / 1.2GB)を上回る。校正(`cos_baseline=0.072`)により
+/// 用語集ベンチマーク v2(日本語・英語・中国語混在・難正例/難負例を含む)で **ONNX 勢の
+/// clusterF1 真ピーク 0.699 が最高**、かつピーク時適合率 P=0.939・誤統合わずか 7 件と**最も
+/// 誤統合が少ない**。精度(clusterF1)・誤統合の少なさ・サイズ(約 1.06GB)のすべてで従来既定の
+/// gte(0.657 / 誤統合 27 件 / 1.2GB)を上回る。校正(`cos_baseline=0.072`)により
 /// clusterF1 真ピークを既定閾値 [`DEFAULT_THRESHOLD`] ちょうどで達成する。
 ///
 /// 唯一の弱点は推論速度で、1024次元 + fp16(CPU)のため gte の約 3 倍(≈16ms/語)。
 /// バッチ用途では問題にならないが、速度重視なら `--model gte`(約 1/3 の推論時間・
-/// clusterF1 0.682)へ、軽量重視なら `--model distiluse`(約 0.54GB)/ `--model small`
+/// clusterF1 0.657)へ、軽量重視なら `--model distiluse`(約 0.54GB)/ `--model small`
 /// (約 0.45GB)へ切り替えられる。詳細は `docs/benchmarks.md` を参照。
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
 
@@ -106,7 +106,7 @@ pub enum UserModel {
     ///
     /// 50+ 言語対応の軽量多言語モデル(DistilBERT・Mean プーリング・768次元)。
     /// ONNX は単一ファイル(約 0.54GB)で外部重みを持たない。gte に次ぐ精度
-    /// (clusterF1 ピーク 0.667 を既定閾値 70 で達成)を最小サイズ・最速級で得る
+    /// (clusterF1 ピーク 0.662 を既定閾値 70 で達成)を最小サイズ・最速級で得る
     /// 軽量代替。詳細は `docs/benchmarks.md` を参照。
     DistiluseMultilingualV2,
     /// ibm-granite/granite-embedding-97m-multilingual-r2
@@ -134,7 +134,7 @@ pub enum UserModel {
     /// XLM-RoBERTa-large 系の高性能多言語モデル(1024次元・CLS プーリング・MIT)。
     /// 100+ 言語対応で日本語も対象。外部重み付き fp32 は単一ファイル化できないが、
     /// fp16 版は単一ファイル(約 1.06GB)で `commit_from_memory` 経由で読める。
-    /// clusterF1 真ピーク 0.725(全モデル中最高)を誤統合 1 件・P=0.983 で達成し、
+    /// clusterF1 真ピーク 0.699(ONNX 勢で最高)を誤統合 7 件・P=0.939 で達成し、
     /// 精度・誤統合の少なさ・サイズで gte を上回る。推論は gte の約 3 倍(≈16ms/語)。
     BgeM3,
     /// Snowflake/snowflake-arctic-embed-l-v2.0 (fp16 ONNX)
@@ -151,8 +151,8 @@ pub enum UserModel {
     /// バックエンドでは利用できなかった**が、Candle バックエンドが safetensors を直接
     /// 読み込むことで利用可能になった。指示プレフィックス(`"Instruct: ... \nQuery: "`)を
     /// 付与して対称類似度に用いる。`cos_baseline=0.67` に校正し clusterF1 真ピークを既定
-    /// 閾値 70 に合わせている。ただし真ピークは 0.670(gte 0.682 未満)で、真ピーク時の
-    /// 誤統合 38 件と全モデル中最多・推論も Candle CPU で遅い(≈220–270ms/語)ため既定には
+    /// 閾値 70 に合わせている。ただし真ピークは 0.645(gte 0.657 未満)で、真ピーク時の
+    /// 誤統合 75 件と全モデル中最多・推論も Candle CPU で遅い(≈220–270ms/語)ため既定には
     /// 採用せず、Candle バックエンドの実例兼 ONNX 非依存環境の選択肢に留める
     /// (詳細は `docs/benchmarks.md`)。
     E5LargeInstruct,
@@ -164,8 +164,8 @@ pub enum UserModel {
     /// safetensors を直接読み、末尾(EOS)トークンの隠れ状態を取り出すことで利用可能に
     /// なった。指示プレフィックス(`"Instruct: ...\nQuery:"`)を付与して対称類似度に用いる。
     /// `cos_baseline=0.69` に校正し clusterF1 真ピークを既定閾値 70 付近に合わせている。
-    /// **clusterF1 真ピーク 0.748(全評価モデル中で最高・bge-m3 0.725 超)** を P=0.984・
-    /// 誤統合 1 件と高精度・高安全性で達成する。ただしデコーダ系で重く、推論は Candle CPU で
+    /// **clusterF1 真ピーク 0.764(bge-m3 0.699 超)** を P=0.926・
+    /// 誤統合 10 件と高精度・高安全性で達成する。ただしデコーダ系で重く、推論は Candle CPU で
     /// 低速(≈200ms/語・bge-m3 の約 12 倍)かつ Candle 専用のため、**既定は速度重視で
     /// bge-m3 のまま**とし、精度最優先/ONNX 非依存環境向けの選択肢として提供する
     /// (詳細は `docs/benchmarks.md`)。
@@ -174,8 +174,9 @@ pub enum UserModel {
     ///
     /// Qwen3-Embedding の 4B 版(2560次元・36層・LastToken・Apache 2.0)。0.6B と同一アーキ。
     /// safetensors は分割保存で f16 約 8GB(CPU の matmul が bf16 非対応のため f16 で読む)。
-    /// 用語集ベンチで **clusterF1 真ピーク 0.964(P=1.000・R=0.931・誤統合 0 件)** と全モデル
-    /// 中で群を抜く精度を既定閾値 70 ちょうどで達成。ただし推論は Candle CPU で ≈3.9 秒/語と
+    /// 用語集ベンチ v2 で **clusterF1 真ピーク 0.956(P=0.963・R=0.948・誤統合 7 件)** と全モデル
+    /// 中で最高精度を既定閾値 70 で達成(v1 では P=1.000・誤統合 0 と「完璧」だったが、難化した v2 で
+    /// `保証⇔保障` などを誤統合するようになり頭打ちが解消)。ただし推論は Candle CPU で ≈3.9 秒/語と
     /// 極めて低速・約 8GB RAM 必須のため、**GPU・バッチ・オフライン等で速度を許容できる精度
     /// 最優先用途向け**(`--model qwen3-4b`、詳細は `docs/benchmarks.md`)。
     Qwen3Embedding4B,
@@ -348,7 +349,7 @@ fn model_spec(model: &Model) -> ModelSpec {
             // 指示対応 E5。対称類似度では同一の指示を両テキストに付与する。
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery: ",
             // ベンチで clusterF1 真ピーク(cos≈0.90)が既定閾値 70 に来るよう校正。
-            // 真ピークは 0.670 と gte(0.682)未満かつ真ピーク時の誤統合 38 件と多いため
+            // 真ピークは 0.645 と gte(0.657)未満かつ真ピーク時の誤統合 75 件と多いため
             // 既定には採用せず eval 用の選択肢に留める(詳細は docs/benchmarks.md)。
             cos_baseline: 0.67,
             pooling: Pool::Mean,
@@ -372,7 +373,7 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::Qwen3Embedding4B) => ModelSpec {
             hf_repo: "Qwen/Qwen3-Embedding-4B",
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
-            // ベンチで clusterF1 真ピーク 0.964 が既定閾値 70 ちょうどに来ることを確認済み。
+            // ベンチ v2 で clusterF1 真ピーク 0.956 が既定閾値 70 に来ることを確認済み。
             cos_baseline: 0.69,
             pooling: Pool::LastToken,
             backend: BackendKind::Candle {
