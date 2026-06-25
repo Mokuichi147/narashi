@@ -96,33 +96,39 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
 ライブラリとして使うだけなら `cli` を外して `clap` 依存を省けます(例: `default-features = false, features = ["candle"]`)。
 
-### GPU(Metal / CUDA)で Candle を実行する
+### GPU(Metal / CUDA)で実行する
 
-Candle モデル(`qwen3` / `qwen3-4b` / `qwen3-8b` / `e5-instruct`)は GPU で実行できます。GPU は既定では無効で、`metal`(Apple GPU)または `cuda`(NVIDIA GPU)フィーチャを **opt-in** で有効化します。GPU では f16 の matmul が使えるため、CPU で f16 が遅い Qwen3 4B/8B で特に効きます。
+GPU は既定では無効で、各フィーチャを **opt-in** で有効化します。バックエンドごとに対応するフィーチャが異なります:
 
-| フィーチャ | バックエンド | 対象 | 前提 |
-| --- | --- | --- | --- |
-| `metal` | Apple GPU(Metal) | Apple Silicon の macOS | macOS 専用。MLX は candle にバックエンドが無いため非対応(Apple GPU は Metal 経由) |
-| `cuda` | NVIDIA GPU(CUDA) | NVIDIA GPU 搭載の Linux / Windows | CUDA Toolkit が必要。macOS では使えない |
+| フィーチャ | バックエンド | 対象モデル | 対象環境 | 前提 |
+| --- | --- | --- | --- | --- |
+| `metal` | Candle(Apple GPU / Metal) | `qwen3` / `qwen3-4b` / `qwen3-8b` / `e5-instruct` | Apple Silicon の macOS | macOS 専用。MLX は candle にバックエンドが無いため非対応(Apple GPU は Metal 経由) |
+| `cuda` | Candle(NVIDIA GPU / CUDA) | `qwen3` / `qwen3-4b` / `qwen3-8b` / `e5-instruct` | NVIDIA GPU 搭載の Linux / Windows | CUDA Toolkit が必要。macOS では使えない |
+| `onnx-cuda` | ONNX Runtime(NVIDIA GPU / CUDA) | `bge-m3`(既定)等の ONNX 系モデル | NVIDIA GPU 搭載の Linux / Windows | CUDA 対応 ONNX Runtime バイナリ(`ort/download-binaries` 経由で取得)・CUDA Toolkit / cuDNN が必要。macOS では使えない |
+
+Candle 系モデルは GPU で f16 の matmul が使えるため、CPU で f16 が遅い Qwen3 4B/8B で特に効きます。
 
 ```sh
-# Apple Silicon(Metal)で GPU を使う
+# Apple Silicon(Metal)で Candle モデルを GPU 実行
 cargo install narashi --features metal
 
-# NVIDIA GPU(CUDA)で GPU を使う
+# NVIDIA GPU(CUDA)で Candle モデルを GPU 実行
 cargo install narashi --features cuda
+
+# NVIDIA GPU(CUDA)で ONNX 系モデル(既定の bge-m3 等)を GPU 実行
+cargo install narashi --features onnx-cuda
 ```
 
 ソースからビルドする場合も同様に `--features` で指定します:
 
 ```sh
-cargo build --release --features metal   # または cuda
-cargo run --release --features metal -- "白い背景" "白背景"
+cargo build --release --features metal       # または cuda / onnx-cuda
+cargo run --release --features onnx-cuda -- "白い背景" "白背景"
 ```
 
-- GPU フィーチャは内部で `candle` を含むため、別途 `candle` を指定する必要はありません。
-- 実行時に GPU デバイスの取得に失敗した場合は、自動的に CPU へフォールバックします(`select_device`)。
-- ONNX バックエンド(`onnx` 既定)で動くモデルは GPU フィーチャの影響を受けません。GPU は Candle 経路のモデルにのみ作用します。
+- `metal` / `cuda` は内部で `candle` を、`onnx-cuda` は内部で `onnx` を含むため、別途バックエンドを指定する必要はありません。
+- 実行時に GPU デバイスや CUDA ランタイムの取得に失敗した場合は、自動的に CPU へフォールバックします(Candle は `select_device`、ONNX は ort の実行プロバイダ登録失敗時フォールバック)。
+- `metal` / `cuda` は Candle 経路のモデルにのみ、`onnx-cuda` は ONNX 経路のモデルにのみ作用します。バックエンドをまたいで GPU を効かせたい場合は両方を指定します(例: `--features cuda,onnx-cuda`)。
 
 > Apple Silicon での計測では、Metal は Candle CPU 並列の約 1.8 倍速。バッチ化は candle 側の制約により未対応です。
 
