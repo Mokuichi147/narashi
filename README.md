@@ -129,7 +129,10 @@ cargo run --release --features onnx-cuda -- "白い背景" "白背景"
 - `metal` / `cuda` は内部で `candle` を、`onnx-cuda` は内部で `onnx` を含むため、別途バックエンドを指定する必要はありません。
 - 実行時に GPU デバイスや CUDA ランタイムの取得に失敗した場合は、自動的に CPU へフォールバックします(Candle は `select_device`、ONNX は ort の実行プロバイダ登録失敗時フォールバック)。
 - `metal` / `cuda` は Candle 経路のモデルにのみ、`onnx-cuda` は ONNX 経路のモデルにのみ作用します。バックエンドをまたいで GPU を効かせたい場合は両方を指定します(例: `--features cuda,onnx-cuda`)。
+- **`onnx-cuda` の実行時要件**: `ort/download-binaries` が取得する CUDA 版 ONNX Runtime は **CUDA 12.x + cuDNN 9.x** に対応します。実行時に `cudnn64_9.dll` などへ PATH が通っている必要があり、見つからないと CUDA 実行プロバイダの読み込みに失敗して CPU にフォールバックします(cuDNN の `bin` ディレクトリを PATH に追加してください)。
 
+> **計測例(RTX 3090・用語153件を1バッチ・既定 bge-m3)**: ONNX の埋め込みは CPU の per_text ≈16.9ms に対し GPU(`onnx-cuda`)は warm ≈0.14ms と **約120倍**(クラスタF1 0.699 は CPU と完全一致)。fp16 が重い bge-m3 で特に効きます。初回のみ cuDNN ウォームアップで +≈0.2 秒、軽量な gte は CPU 5.37ms→GPU 0.12ms(約44倍)。バッチが小さい/語数が少ない用途では転送・起動オーバーヘッドの比率が上がり、倍率は下がります。
+>
 > Apple Silicon での計測では、Metal は Candle CPU 並列の約 1.8 倍速。バッチ化は candle 側の制約により未対応です。
 
 キャッシュディレクトリは環境変数 `NARASHI_CACHE_DIR` でも指定できます:
