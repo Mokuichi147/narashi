@@ -529,6 +529,23 @@ impl Embedder {
     }
 }
 
+/// ONNX(fastembed)に渡す実行プロバイダ一覧を返す
+///
+/// `onnx-cuda` フィーチャが有効なときだけ CUDA 実行プロバイダを積む。実行時に GPU や
+/// CUDA ランタイムが見つからない場合、ort は警告を出して自動的に CPU へフォールバックする
+/// (EP の登録失敗は致命的ではない)。フィーチャ無効時は空を返し、従来どおり CPU で実行する。
+#[cfg(feature = "onnx")]
+fn onnx_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
+    #[cfg(feature = "onnx-cuda")]
+    {
+        vec![ort::execution_providers::CUDAExecutionProvider::default().build()]
+    }
+    #[cfg(not(feature = "onnx-cuda"))]
+    {
+        Vec::new()
+    }
+}
+
 /// ユーザー定義 ONNX モデルを fastembed で読み込む
 #[cfg(feature = "onnx")]
 fn build_onnx_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result<Embedder> {
@@ -559,7 +576,7 @@ fn build_onnx_embedder(repo: &ApiRepo, weights_file: &str, pool: Pool) -> Result
         UserDefinedEmbeddingModel::new(fetch(weights_file)?, tokenizer_files).with_pooling(pooling);
     Ok(Embedder::Onnx(TextEmbedding::try_new_from_user_defined(
         user_model,
-        InitOptionsUserDefined::new(),
+        InitOptionsUserDefined::new().with_execution_providers(onnx_execution_providers()),
     )?))
 }
 
@@ -640,7 +657,9 @@ impl Narashi {
         let embedder = match spec.backend {
             #[cfg(feature = "onnx")]
             BackendKind::Builtin(m) => Embedder::Onnx(TextEmbedding::try_new(
-                InitOptions::new(m).with_cache_dir(cache_dir.clone()),
+                InitOptions::new(m)
+                    .with_cache_dir(cache_dir.clone())
+                    .with_execution_providers(onnx_execution_providers()),
             )?),
             BackendKind::Onnx { weights_file } => {
                 #[cfg(feature = "onnx")]
