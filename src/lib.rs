@@ -81,12 +81,14 @@ pub const DEFAULT_THRESHOLD: f32 = 70.0;
 ///
 /// コサイン類似度を 0〜100 のスコアへ写像する際の基準。この値を 0、完全一致 1.0 を 100 と
 /// する一次変換 `score = (cos - baseline) / (1 - baseline) * 100` を全モデルに一律で適用する。
-/// 埋め込みのコサインは高帯域(0.8〜1.0)に偏りがちなので、ベースラインを引くことで実用的な
-/// 閾値が 95 付近ではなく 70 付近に来るよう広げる。`0.5` は cos 0.85→70 / cos 0.95→90 に対応する。
+/// 埋め込みのコサインは高帯域(0.85〜1.0)に偏りがちなので、ベースラインを引くことで実用的な
+/// 閾値が 95 付近ではなく 70 付近に来るよう広げる。`0.7` は cos 0.85→50 / cos 0.91→70 /
+/// cos 0.95→83 に対応する(全モデルの暴走オンセット実測から、主要モデルの安全運用点が 70 前後に
+/// 来るよう選定。`docs/benchmarks.md` 参照)。
 ///
 /// モデルごとの分布差は閾値そのもの(モデル別に選ぶ)で吸収する方針とし、ここはモデルに
 /// 依存しない単一定数とする。
-pub const SCORE_BASELINE: f32 = 0.5;
+pub const SCORE_BASELINE: f32 = 0.7;
 
 pub mod eval;
 
@@ -855,12 +857,13 @@ mod tests {
     #[test]
     fn score_uses_global_baseline() {
         // 全モデル共通の SCORE_BASELINE で写像される。
-        // b=0.5 なら cos 0.85→70 / cos 0.95→90。設計値が変わったら気付けるようにする。
+        // b=0.7 なら cos 0.85→50 / cos 0.91→70 / cos 0.95→83。設計値が変わったら気付けるように。
         let b = SCORE_BASELINE;
         assert!((score_with(b, 1.0) - 100.0).abs() < 1e-4);
         assert!((score_with(b, b) - 0.0).abs() < 1e-4);
-        assert!((score_with(b, 0.85) - 70.0).abs() < 1.0);
-        assert!((score_with(b, 0.95) - 90.0).abs() < 1.0);
+        assert!((score_with(b, 0.85) - 50.0).abs() < 1.0);
+        assert!((score_with(b, 0.91) - 70.0).abs() < 1.0);
+        assert!((score_with(b, 0.95) - 83.3).abs() < 1.0);
     }
 
     #[test]

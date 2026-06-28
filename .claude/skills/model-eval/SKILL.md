@@ -139,7 +139,7 @@ cargo run --release --no-default-features --features candle --example candle_eva
 (参考値)。新アーキを足すときは `src/candle_backend.rs` の `match model_type` に分岐を追加する
 (各アーキで `Config` 型・コンストラクタ・`forward` 引数・プーリングが異なる)。
 
-**固定閾値(既定 70)での横並び比較はしない**。校正は全モデル共通([`SCORE_BASELINE`]=0.5)だが、
+**固定閾値(既定 70)での横並び比較はしない**。校正は全モデル共通([`SCORE_BASELINE`]=0.7)だが、
 各モデルの余弦分布が違うため**適切な動作点(閾値)はモデルごとに異なる**。`benchmark` の 5 刻みスイープで
 概形をつかみ、**`fine_sweep` の 1 刻み真ピーク(各モデルの最適閾値での clusterF1)でモデル間を比較**する。
 モデルにより clusterF1 のピーク閾値は大きく異なる(共通校正下では総じて高め)が、ピーク閾値の位置自体は
@@ -207,7 +207,7 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 - **best-F1 / best-thr**: 素ペア分類 F1 の上限と、その最適閾値。
 - **margin**: `正例min − 負例max`。0 に近いほど正例・負例が分離している。
 - **最適閾値の位置は優劣ではない**: best-thr / clusterF1 真ピークの閾値が 70 から外れても、それは
-  各モデルの余弦分布の違い(共通校正 [`SCORE_BASELINE`]=0.5 のもとでの相対位置)であって、モデルの
+  各モデルの余弦分布の違い(共通校正 [`SCORE_BASELINE`]=0.7 のもとでの相対位置)であって、モデルの
   良し悪しの根拠にしない。比較はあくまで真ピークの **値** で行う。運用閾値はモデルごとに `fine_sweep`
   (品質ピーク)と `robustness`(暴走オンセット)を見て選ぶ。
 
@@ -225,11 +225,11 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 - **暴走オンセット**: ratio ≥ 10% または groups ≥ 5 になる最高閾値。example が末尾に出力する。
 - **運用閾値は clusterF1 のピークではなく、暴走オンセットより安全側(高い)で選ぶ**。clusterF1 ピークが
   暴走域内に来るモデルが多く、ピークに合わせると実データで崩壊する(example が ⚠ で警告する)。
-- **校正は単一定数 [`SCORE_BASELINE`]=0.5(モデル非依存)**(`score = (cos-0.5)/(1-0.5)*100`、全モデルで
-  閾値 70 = 余弦 0.85)。**モデル間の余弦分布差は、校正ではなく「モデルごとに運用閾値を選ぶ」ことで吸収する**。
-  だから**モデルを替えたら必ず閾値も選び直す**。実測例: granite-278m は @74–78 で安全(巻込2・R≈0.55–0.58)、
-  bge-m3 は @72–74、distiluse は @90 まで上げないと安全にならない。e5-small は @70 で崩壊する。
-  詳細表は `docs/benchmarks.md`「堅牢性: 連鎖暴走対策」。
+- **校正は単一定数 [`SCORE_BASELINE`]=0.7(モデル非依存)**(`score = (cos-0.7)/(1-0.7)*100`、全モデルで
+  閾値 70 = 余弦 0.91)。**モデル間の余弦分布差は、校正ではなく「モデルごとに運用閾値を選ぶ」ことで吸収する**。
+  だから**モデルを替えたら必ず閾値も選び直す**。実測例: granite-278m は @57–63 で安全(巻込2・R≈0.55–0.58)、
+  qwen3-8b は @77–82(R≈0.87–0.91で最良)、distiluse は @83・paraphrase/mpnet は @93 まで上げないと
+  安全にならない。詳細表は `docs/benchmarks.md`「堅牢性: 連鎖暴走対策」。
 - **新モデル採用時は必ず robustness を回す**。clusterF1 が高くても、暴走オンセットより安全側に十分な再現率を
   残せる運用閾値が取れなければ採用しない。Candle 勢も `--features candle` で測る(per_text が遅いので時間に
   注意。数百語 × 低速)。
@@ -254,7 +254,7 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 ピーク**(各モデルの最適閾値での値)で行う。**運用閾値はモデルごとに `robustness` の暴走オンセットを見て
 選ぶ**:
 - **精度の絶対最高は Qwen3-Embedding-8B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
-  **0.974(P=0.984・R=0.964・誤統合 3 件)**で全モデル中最高、堅牢性ベンチでも暴走耐性が最良(@86–89 で
+  **0.974(P=0.984・R=0.964・誤統合 3 件)**で全モデル中最高、堅牢性ベンチでも暴走耐性が最良(@77–82 で
   巻込1・R≈0.87–0.91)。RTX 3090(24GB VRAM・CUDA)で計測。GPU 実行なら per_text≈26ms と高速だが要 GPU
   (`--model qwen3-8b`、`--features candle,cuda`)。
 - **次が Qwen3-Embedding-4B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
