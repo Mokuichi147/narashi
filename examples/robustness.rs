@@ -93,8 +93,8 @@ fn main() -> Result<()> {
 
     let n = Narashi::with_options(Options::new().with_model(model))?;
 
-    // 40〜95 を 1 刻み
-    let thresholds: Vec<f32> = (40..=95).map(|t| t as f32).collect();
+    // 0〜100 を 1 刻み
+    let thresholds: Vec<f32> = (0..=100).map(|t| t as f32).collect();
     let rows = sweep(&n, &glossary, &thresholds)?;
 
     println!("== robustness (連鎖暴走) sweep: {label} ==");

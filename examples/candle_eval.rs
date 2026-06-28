@@ -32,10 +32,10 @@ fn main() -> Result<()> {
     let report = evaluate_with_load(&n, &glossary, threshold, label, load_ms)?;
     println!("{report}");
 
-    // 1 刻み(40〜95)の真ピークは追加の埋め込みパスが要る(Candle デコーダは低速)。
+    // 1 刻み(0〜100)の真ピークは追加の埋め込みパスが要る(Candle デコーダは低速)。
     // 第 3 引数 `fine` を渡したときだけ実行する。
     if std::env::args().nth(3).as_deref() == Some("fine") {
-        let thresholds: Vec<f32> = (40..=95).map(|t| t as f32).collect();
+        let thresholds: Vec<f32> = (0..=100).map(|t| t as f32).collect();
         let rows = sweep(&n, &glossary, &thresholds)?;
         let mut peak = (0.0_f64, 0.0_f32, 0.0_f64, 0.0_f64, 0usize);
         for r in &rows {
