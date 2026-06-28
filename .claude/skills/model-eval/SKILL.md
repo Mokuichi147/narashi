@@ -253,11 +253,14 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 最新の数値・採用判断は `docs/benchmarks.md` を一次情報とする(本節は要約のみ)。比較は **clusterF1 真
 ピーク**(各モデルの最適閾値での値)で行う。**運用閾値はモデルごとに `robustness` の暴走オンセットを見て
 選ぶ**:
-- **精度の絶対最高は Qwen3-Embedding-4B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
-  **0.956(P=0.963・R=0.948・誤統合 7 件)**で全モデルを引き離す(v1 では P=1.000・誤統合 0 と「完璧」だったが、
-  難化した v2 で `保証⇔保障` などを誤統合し頭打ちが解消)。弱点は速度/RAM(Candle CPU・f16・≈3.9 秒/語・約 8GB RAM)。
-  GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け(`--model qwen3-4b`)。8B は
-  約 16GB RAM 必須で本環境では未測定(`--model qwen3-8b`)。
+- **精度の絶対最高は Qwen3-Embedding-8B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
+  **0.974(P=0.984・R=0.964・誤統合 3 件)**で全モデル中最高、堅牢性ベンチでも暴走耐性が最良(@86–89 で
+  巻込1・R≈0.87–0.91)。RTX 3090(24GB VRAM・CUDA)で計測。GPU 実行なら per_text≈26ms と高速だが要 GPU
+  (`--model qwen3-8b`、`--features candle,cuda`)。
+- **次が Qwen3-Embedding-4B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
+  **0.956(P=0.963・R=0.948・誤統合 7 件)**(v1 では P=1.000・誤統合 0 と「完璧」だったが、
+  難化した v2 で `保証⇔保障` などを誤統合し頭打ちが解消)。弱点は速度/RAM(Candle CPU・f16・≈3.9 秒/語・約 8GB RAM。
+  GPU なら大幅高速)。GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け(`--model qwen3-4b`)。
 - **その中間が Qwen3-Embedding-0.6B**(Candle・Apache 2.0・last-token)。clusterF1 真ピーク 0.764・P=0.926・
   誤統合 10 件で bge-m3(0.699)を精度で上回る。≈200ms/語と 4B よりは軽い。ONNX 非依存環境向け(`--model qwen3`・
   Candle 単独ビルドでは既定)。
@@ -282,8 +285,9 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 - 別系統(BGE-zh / 英語 MiniLM / CLIP)は本データで大きく劣り、多言語特化が必須と確認。
 - **Candle バックエンドで評価できるようになったモデル**: e5-large-instruct(XLM-RoBERTa・外部重み付き ONNX
   しか無く従来不可→ Candle で評価→ clusterF1 0.645・誤統合 75 件で**見送り**)、Qwen3-Embedding(last-token
-  プーリングで fastembed 非対応→ Candle に実装。**0.6B で 0.764、4B(分割保存・f16・約 8GB)で clusterF1 0.956・
-  P=0.963・誤統合 7 件と全モデル中最高**→ いずれも**採用**。8B は約 16GB RAM 必須で本環境では未測定)。
+  プーリングで fastembed 非対応→ Candle に実装。**0.6B で 0.764、4B(分割保存・f16・約 8GB)で 0.956、
+  8B(f16)で clusterF1 0.974・P=0.984・誤統合 3 件と全モデル中最高**→ いずれも**採用**。8B は RTX 3090
+  (24GB VRAM・CUDA)で計測した)。
 - 評価対象外(現状): jina-v3(CC-BY-NC・ライセンス非寛容)・ruri-base(BertJapaneseTokenizer が MeCab/unidic
   依存で `tokenizer.json` 非配布。BertModel は Candle で読めるが純 Rust では形態素解析器が別途必要)・
   gte-Qwen2-7B / e5-mistral-7b 等(last-token だが 7〜8B 級で Candle CPU では非現実的)。詳細は benchmarks 参照。
