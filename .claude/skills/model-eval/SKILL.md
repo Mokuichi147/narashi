@@ -260,10 +260,11 @@ mkdir -p "$dir/refs"; echo -n snap > "$dir/refs/main"
 - **次が Qwen3-Embedding-4B**(Candle・Apache 2.0・last-token・f16)。clusterF1 真ピーク
   **0.956(P=0.963・R=0.948・誤統合 7 件)**(v1 では P=1.000・誤統合 0 と「完璧」だったが、
   難化した v2 で `保証⇔保障` などを誤統合し頭打ちが解消)。弱点は速度/RAM(Candle CPU・f16・≈3.9 秒/語・約 8GB RAM。
-  GPU なら大幅高速)。GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け(`--model qwen3-4b`)。
+  GPU なら大幅高速)。**Candle 単独ビルドの既定モデル**(`DEFAULT_THRESHOLD` も Candle では 83)。堅牢性ベンチで
+  暴走オンセット 82・安全運用点 @83 で R≈0.75 と Candle 勢で堅牢性 × 再現率のバランスが良い(`--model qwen3-4b`)。
 - **その中間が Qwen3-Embedding-0.6B**(Candle・Apache 2.0・last-token)。clusterF1 真ピーク 0.764・P=0.926・
-  誤統合 10 件で bge-m3(0.699)を精度で上回る。≈200ms/語と 4B よりは軽い。ONNX 非依存環境向け(`--model qwen3`・
-  Candle 単独ビルドでは既定)。
+  誤統合 10 件で bge-m3(0.699)を精度で上回るが、堅牢性ベンチで暴走オンセット 94・実用的な安全運用点が無い
+  (安全点で R≈0.02)ため既定からは外した軽量枠(`--model qwen3`)。
 - **総合の既定は bge-m3**(精度・速度・安全性のバランス)。clusterF1 真ピーク **0.699 は ONNX 勢で最高**、ピーク時
   P=0.939・**誤統合わずか 7 件は強モデル中で最小**で、ONNX により Qwen3 の約 12 倍高速(≈16ms/語)。
   「高 clusterF1 は誤統合増と引き換え」(granite-278m は 0.682 だが誤統合 28 件)というトレードオフを破り、

@@ -44,10 +44,10 @@ enum ModelArg {
     /// multilingual-e5-large-instruct (Candle・ONNX非依存環境向け・clusterF1 0.645で誤統合最多75件・低速・1024次元)
     #[cfg(feature = "candle")]
     E5Instruct,
-    /// Qwen3-Embedding-0.6B (Candle・clusterF1 0.764でbge-m3超だが低速・1024次元・精度最優先/ONNX非依存向け)
+    /// Qwen3-Embedding-0.6B (Candle・clusterF1 0.764でbge-m3超だが暴走オンセット94で安全運用点が無く軽量枠・1024次元)
     #[cfg(feature = "candle")]
     Qwen3,
-    /// Qwen3-Embedding-4B (Candle・clusterF1最高0.956・誤統合7件だが超低速≈3.9秒/語・約8GB RAM・GPU/バッチ向け)
+    /// Qwen3-Embedding-4B (Candle単独ビルドの既定・clusterF1 0.956・暴走オンセット82で@83 R≈0.75・f16でGPU推奨・2560次元)
     #[cfg(feature = "candle")]
     #[value(name = "qwen3-4b")]
     Qwen34b,
@@ -57,12 +57,12 @@ enum ModelArg {
     Qwen38b,
 }
 
-/// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら Qwen3-Embedding
-/// (Candle 勢では clusterF1 最高 0.764・誤統合少で最良。e5-instruct より精度・安全性が高い)。
+/// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら Qwen3-Embedding-4B
+/// (Candle 勢では暴走オンセット 82・安全運用点 @83 で R≈0.75 と堅牢性 × 再現率のバランスが最良)。
 #[cfg(feature = "onnx")]
 const DEFAULT_MODEL_ARG: ModelArg = ModelArg::BgeM3;
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
-const DEFAULT_MODEL_ARG: ModelArg = ModelArg::Qwen3;
+const DEFAULT_MODEL_ARG: ModelArg = ModelArg::Qwen34b;
 
 impl From<ModelArg> for Model {
     fn from(m: ModelArg) -> Self {

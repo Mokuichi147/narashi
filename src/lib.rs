@@ -73,9 +73,17 @@ pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
 ///
 /// この値以上のスコアを持つペアが統合されます。CLI の `--threshold` 既定値および
 /// 評価ベンチマークの開始点として共有されます。**適切な閾値はモデルごとに異なる**ため、
-/// モデルを切り替えるときは併せて調整してください(`examples/fine_sweep` で品質ピーク、
-/// `examples/robustness` で連鎖暴走しない上限を確認する)。
+/// 既定モデルが異なるバックエンドごとに値を変えています。モデルを切り替えるときは
+/// `examples/fine_sweep`(品質ピーク)と `examples/robustness`(連鎖暴走しない上限)で確認のこと。
+///
+/// ONNX 既定の bge-m3 は暴走オンセット 52 で、70 は安全側にある。
+#[cfg(feature = "onnx")]
 pub const DEFAULT_THRESHOLD: f32 = 70.0;
+
+/// Candle 単独ビルドの既定 qwen3-4b は暴走オンセット 82 のため、その直上で安全側の 83 を既定とする
+/// (@83 で巻込2・R≈0.75。`docs/benchmarks.md` の堅牢性表を参照)。
+#[cfg(all(not(feature = "onnx"), feature = "candle"))]
+pub const DEFAULT_THRESHOLD: f32 = 83.0;
 
 /// スコア校正のベースライン余弦値(全モデル共通・モデル非依存)
 ///
@@ -109,10 +117,12 @@ pub mod eval;
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
 
 /// ONNX Runtime を取得できない環境(`--no-default-features --features candle`)向けの既定モデル。
-/// bge-m3 は ONNX バックエンド専用のため、Candle 単独ビルドでは Candle 系の Qwen3-Embedding-0.6B を
-/// 既定にすることで、モデル未指定でもそのまま動作できるようにする。
+/// bge-m3 は ONNX バックエンド専用のため、Candle 単独ビルドでは Candle 系の Qwen3-Embedding-4B を
+/// 既定にする。堅牢性ベンチで暴走オンセット 82・安全運用点 @83 で R≈0.75 と、Candle 勢で堅牢性 ×
+/// 再現率のバランスが良い(精度上限の 8B は約 16GB の VRAM/RAM を要するため既定にはしない。最軽量の
+/// 0.6B は暴走オンセット 94 で実用的な安全運用点が無く不適)。f16・要 GPU(CPU では低速)。
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
-pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding0_6B);
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding4B);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
