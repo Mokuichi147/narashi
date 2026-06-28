@@ -70,11 +70,33 @@ impl Glossary {
     pub fn term_count(&self) -> usize {
         self.groups.iter().map(Vec::len).sum()
     }
+
+    /// 別の用語集のグループを連結した新しい用語集を返す。
+    ///
+    /// `flatten` はグループ順に連番でグループ ID を振り直すため、連結後も
+    /// 「同グループ内=正例・異グループ間=負例」の不変条件は保たれる。ただし両者で
+    /// 同じ語が出現するとラベルが壊れる(本来別グループの語が同一視される)ため、
+    /// 連結する用語集どうしは語が重複しないこと(テストで保証する)。
+    pub fn extended(mut self, other: &Glossary) -> Self {
+        self.groups.extend(other.groups.iter().cloned());
+        self
+    }
 }
 
 /// クレートに同梱された既定の評価用用語集を返す。
 pub fn default_glossary() -> Glossary {
     Glossary::parse(include_str!("../tests/data/glossary.txt"))
+}
+
+/// 連鎖暴走(over-merge)検証用のディストラクタ用語集を返す。
+///
+/// 全行が単独語(どれとも統合されない負例)。実データのタグ群に多い「ハブ語」
+/// (`1`/`2B`/`3D` 等の汎用短トークンや単一文字)と、互いに非同義の無関係タグを
+/// 多数含む。[`default_glossary`] と [`Glossary::extended`] で連結し、単連結
+/// クラスタリングが巨大ゴミクラスタへ崩壊しないか(`largest_cluster_ratio` /
+/// `groups_in_largest`)を測るためのストレスデータ。
+pub fn default_distractors() -> Glossary {
+    Glossary::parse(include_str!("../tests/data/distractors.txt"))
 }
 
 /// 固定閾値での分類精度 (ペア単位、推移閉包なし)
@@ -125,6 +147,15 @@ pub struct Clustering {
     pub false_merges: usize,
     /// 誤統合の具体例 (異グループなのに統合された語ペア。表示用に一部のみ保持)
     pub false_merge_examples: Vec<(String, String)>,
+    /// 最大予測クラスタの語数 (連鎖暴走の規模)
+    pub largest_cluster_size: usize,
+    /// 最大予測クラスタが全語に占める割合 (`largest_cluster_size / 総語数`)。
+    /// 1.0 に近いほど「1 つの巨大ゴミクラスタが全体を飲み込んだ」= 連鎖暴走。
+    pub largest_cluster_ratio: f64,
+    /// 最大予測クラスタに巻き込まれた相異なる正解グループ数。
+    /// 健全なら 1 (1 つの正解グループ = 1 クラスタ)、暴走すると多数の無関係グループを
+    /// 1 クラスタが横断する。単連結クラスタリングの連鎖暴走を直接捉える核心指標。
+    pub groups_in_largest: usize,
 }
 
 /// 速度指標
@@ -155,6 +186,10 @@ pub struct SweepRow {
     pub cluster_recall: f64,
     /// 誤統合ペア数 (推移閉包込みで同一クラスタにされた異グループ間ペア = データ破壊)
     pub false_merges: usize,
+    /// 最大クラスタが全語に占める割合 (連鎖暴走の度合い。1.0 に近いほど暴走)
+    pub largest_cluster_ratio: f64,
+    /// 最大クラスタに巻き込まれた相異なる正解グループ数 (健全なら 1、暴走で多数)
+    pub groups_in_largest: usize,
 }
 
 /// スコア付きの語ペア (表示用)。`(語 a, 語 b, スコア)`
@@ -184,8 +219,11 @@ pub struct Benchmark {
 /// 最難ペアとして保持・表示する件数 (負例・正例それぞれ)
 pub const HARDEST_PAIRS: usize = 10;
 
-/// 既定でスイープする閾値 (50〜95 を 5 刻み)
-pub const SWEEP_THRESHOLDS: &[f32] = &[50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0];
+/// 既定でスイープする閾値 (0〜100 を 5 刻み)
+pub const SWEEP_THRESHOLDS: &[f32] = &[
+    0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0,
+    80.0, 85.0, 90.0, 95.0, 100.0,
+];
 
 /// 1 ペア分のスコア情報 `(添字 i, 添字 j, スコア, 正例フラグ)`
 ///
@@ -195,7 +233,8 @@ type ScoredPair = (usize, usize, f32, bool);
 /// 全ペアのスコア (添字・スコア・正例フラグ) を 1 度だけ計算する。
 ///
 /// 同じ埋め込みから任意の閾値でのクラスタリングを再計算できるよう、添字付きで返す。
-fn scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<(usize, Vec<ScoredPair>)> {
+/// 併せて各語の正解グループ ID を返す (トポロジー指標の算出に使う)。
+fn scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<(usize, Vec<ScoredPair>, Vec<usize>)> {
     let (terms, group_ids) = glossary.flatten();
     let num = terms.len();
     let embeddings = n.embed_normalized(&terms)?;
@@ -206,11 +245,39 @@ fn scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<(usize, Vec<ScoredPa
             scored.push((i, j, s, group_ids[i] == group_ids[j]));
         }
     }
-    Ok((num, scored))
+    Ok((num, scored, group_ids))
+}
+
+/// 連結成分の根の配列から、最大クラスタの規模と巻き込んだ正解グループ数を求める。
+///
+/// 返り値 `(largest_cluster_size, groups_in_largest)`。`groups_in_largest` は最大クラスタに
+/// 属する語の正解グループ ID の異なり数で、単連結クラスタリングの連鎖暴走を直接捉える
+/// (健全なら 1、暴走すると無関係な多数グループを 1 クラスタが横断する)。
+fn largest_cluster_topology(roots: &[usize], group_ids: &[usize]) -> (usize, usize) {
+    // 各根のメンバ添字を集める。
+    let mut members: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for (i, &r) in roots.iter().enumerate() {
+        members.entry(r).or_default().push(i);
+    }
+    members
+        .values()
+        .map(|idxs| {
+            let groups: std::collections::HashSet<usize> =
+                idxs.iter().map(|&i| group_ids[i]).collect();
+            (idxs.len(), groups.len())
+        })
+        // 最大クラスタは語数で選ぶ (同数なら巻込グループ数が多い方)。
+        .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
+        .unwrap_or((0, 0))
 }
 
 /// 添字付きスコアから、各閾値の分類 F1 とクラスタ F1 (推移閉包込み) を算出する。
-fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> Vec<SweepRow> {
+fn sweep_from_scored(
+    num: usize,
+    scored: &[ScoredPair],
+    group_ids: &[usize],
+    thresholds: &[f32],
+) -> Vec<SweepRow> {
     thresholds
         .iter()
         .map(|&t| {
@@ -236,6 +303,7 @@ fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> V
                 }
             }
             let (cp, cr, cluster_f1) = prf(ctp, cfp, cfn);
+            let (largest, groups_in_largest) = largest_cluster_topology(&roots, group_ids);
             SweepRow {
                 threshold: t,
                 class_f1,
@@ -243,6 +311,12 @@ fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> V
                 cluster_precision: cp,
                 cluster_recall: cr,
                 false_merges: cfp,
+                largest_cluster_ratio: if num == 0 {
+                    0.0
+                } else {
+                    largest as f64 / num as f64
+                },
+                groups_in_largest,
             }
         })
         .collect()
@@ -253,8 +327,8 @@ fn sweep_from_scored(num: usize, scored: &[ScoredPair], thresholds: &[f32]) -> V
 /// 埋め込みを 1 度だけ計算して使い回すため、細かい刻みのスイープでも高速。
 /// 既定閾値以外でのモデル挙動 (ピークの位置・鋭さ) を検証するのに使う。
 pub fn sweep(n: &Narashi, glossary: &Glossary, thresholds: &[f32]) -> Result<Vec<SweepRow>> {
-    let (num, scored) = scored_pairs(n, glossary)?;
-    Ok(sweep_from_scored(num, &scored, thresholds))
+    let (num, scored, group_ids) = scored_pairs(n, glossary)?;
+    Ok(sweep_from_scored(num, &scored, &group_ids, thresholds))
 }
 
 /// 全ペアを `(語 a, 語 b, 正例フラグ, スコア)` で返す(難易度分析・ダンプ用)。
@@ -263,7 +337,7 @@ pub fn sweep(n: &Narashi, glossary: &Glossary, thresholds: &[f32]) -> Result<Vec
 /// ための生データ。埋め込みは 1 度だけ計算する。
 pub fn all_scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<Vec<NamedPairLabeled>> {
     let (terms, _) = glossary.flatten();
-    let (_, scored) = scored_pairs(n, glossary)?;
+    let (_, scored, _) = scored_pairs(n, glossary)?;
     Ok(scored
         .into_iter()
         .map(|(i, j, s, positive)| (terms[i].clone(), terms[j].clone(), positive, s))
@@ -480,6 +554,26 @@ pub fn evaluate_with_load(
             predicted_sets.contains(&want)
         })
         .count();
+    // --- 連鎖暴走の検知: 最大予測クラスタの規模と巻き込んだ正解グループ数 ---
+    // 単連結クラスタリングはハブ語を介して無関係なクラスタを 1 つの巨大成分へ連鎖させうる。
+    // ペア単位の誤統合数では見えにくいため、最大クラスタが何語・何グループを飲み込んだかを測る。
+    let true_gid_of: std::collections::HashMap<&str, usize> = terms
+        .iter()
+        .zip(group_ids.iter())
+        .map(|(t, &g)| (t.as_str(), g))
+        .collect();
+    let (largest_cluster_size, groups_in_largest) = groups
+        .iter()
+        .map(|g| {
+            let gids: std::collections::HashSet<usize> = g
+                .members
+                .iter()
+                .filter_map(|m| true_gid_of.get(m.as_str()).copied())
+                .collect();
+            (g.members.len(), gids.len())
+        })
+        .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
+        .unwrap_or((0, 0));
     let clustering = Clustering {
         threshold,
         pair_precision: cp,
@@ -490,11 +584,18 @@ pub fn evaluate_with_load(
         predicted_clusters: groups.len(),
         false_merges: cfp,
         false_merge_examples,
+        largest_cluster_size,
+        largest_cluster_ratio: if num == 0 {
+            0.0
+        } else {
+            largest_cluster_size as f64 / num as f64
+        },
+        groups_in_largest,
     };
 
     // --- 閾値スイープ (既定閾値以外の挙動) ---
     // 各閾値で分類 F1 とクラスタ F1 (推移閉包込み) を再埋め込みせず算出する。
-    let sweep = sweep_from_scored(num, &scored, SWEEP_THRESHOLDS);
+    let sweep = sweep_from_scored(num, &scored, &group_ids, SWEEP_THRESHOLDS);
 
     // --- 最難ペア (閾値非依存の境界可視化) ---
     // 負例: スコア降順の上位 = 最も誤統合しやすい(適合率の境界)。
@@ -577,6 +678,18 @@ impl fmt::Display for Benchmark {
         )?;
         writeln!(
             f,
+            "-- 連鎖暴走の検知 (最大クラスタが飲み込んだ規模, 閾値 {:.1}) --",
+            cl.threshold
+        )?;
+        writeln!(
+            f,
+            "  最大クラスタ={}語 (全体の{:.1}%)  巻込グループ数={} (健全=1, 多いほど暴走)",
+            cl.largest_cluster_size,
+            cl.largest_cluster_ratio * 100.0,
+            cl.groups_in_largest
+        )?;
+        writeln!(
+            f,
             "-- 誤統合 (データ破壊: 異グループの語を統合した数, 閾値 {:.1}) --",
             cl.threshold
         )?;
@@ -597,18 +710,26 @@ impl fmt::Display for Benchmark {
             };
             writeln!(f, "  例: {}{}", shown.join(", "), suffix)?;
         }
-        writeln!(f, "-- 閾値スイープ (分類F1 / クラスタF1 P R / 誤統合) --")?;
-        writeln!(f, "  閾値 |  分類F1 | クラスタF1 (   P  /   R  ) | 誤統合")?;
+        writeln!(
+            f,
+            "-- 閾値スイープ (分類F1 / クラスタF1 P R / 誤統合 / 最大率 巻込G) --"
+        )?;
+        writeln!(
+            f,
+            "  閾値 |  分類F1 | クラスタF1 (   P  /   R  ) | 誤統合 | 最大率 巻込G"
+        )?;
         for row in &self.sweep {
             writeln!(
                 f,
-                "  {:>4.0} |  {:.3}  |   {:.3}   ( {:.3} / {:.3} ) | {:>5}",
+                "  {:>4.0} |  {:.3}  |   {:.3}   ( {:.3} / {:.3} ) | {:>5}  | {:>5.1}%  {:>4}",
                 row.threshold,
                 row.class_f1,
                 row.cluster_f1,
                 row.cluster_precision,
                 row.cluster_recall,
-                row.false_merges
+                row.false_merges,
+                row.largest_cluster_ratio * 100.0,
+                row.groups_in_largest
             )?;
         }
         writeln!(
@@ -709,6 +830,86 @@ mod tests {
         for t in ["春", "科学", "増加"] {
             assert!(singletons.contains(&t), "{t} は単独語(難負例)であるべき");
         }
+    }
+
+    #[test]
+    fn largest_cluster_topology_detects_chaining() {
+        // 健全: 各正解グループが独立クラスタ → 巻込グループ数は 1。
+        let roots = vec![0, 0, 2, 2, 4];
+        let group_ids = vec![0, 0, 1, 1, 2];
+        let (size, groups) = largest_cluster_topology(&roots, &group_ids);
+        assert_eq!((size, groups), (2, 1));
+
+        // 連鎖暴走: 1 つの根に複数の無関係グループが流れ込む。
+        let roots = vec![9, 9, 9, 9, 5];
+        let (size, groups) = largest_cluster_topology(&roots, &group_ids);
+        assert_eq!(size, 4, "最大クラスタは 4 語");
+        assert_eq!(groups, 2, "無関係な 2 グループを横断 = 暴走の検知");
+    }
+
+    #[test]
+    fn sweep_detects_runaway_via_hub() {
+        // 3 グループ {0,1}{2,3}{4}。ハブ的なペア (1,2) が別グループを橋渡しすると、
+        // 低閾値で 0-1-2-3 が 1 クラスタへ連鎖する。トポロジー指標がこれを捉える。
+        let group_ids = vec![0usize, 0, 1, 1, 2];
+        let scored: Vec<ScoredPair> = vec![
+            (0, 1, 100.0, true),  // group0 内
+            (2, 3, 100.0, true),  // group1 内
+            (1, 2, 90.0, false),  // 橋(異グループ)
+            (3, 4, 10.0, false),  // 弱い無関係ペア
+        ];
+        let rows = sweep_from_scored(5, &scored, &group_ids, &[50.0, 95.0]);
+        // 閾値 50: 橋が生きて 4 語が連鎖、2 グループを横断。
+        assert_eq!(rows[0].groups_in_largest, 2);
+        assert!((rows[0].largest_cluster_ratio - 0.8).abs() < 1e-9);
+        // 閾値 95: 橋が切れ、各正解グループは独立 → 巻込は 1。
+        assert_eq!(rows[1].groups_in_largest, 1);
+        assert!((rows[1].largest_cluster_ratio - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn distractors_are_all_singletons_and_disjoint_from_glossary() {
+        // ディストラクタは全行が単独語(負例の母集団)。グループ化されていたら誤り。
+        let d = default_distractors();
+        for g in &d.groups {
+            assert_eq!(g.len(), 1, "ディストラクタ {g:?} は単独語であるべき");
+        }
+        // 用語集とディストラクタで語が重複するとラベルが壊れる(連結時に偽陰性化)。
+        let g = default_glossary();
+        let glossary: std::collections::HashSet<&str> =
+            g.groups.iter().flatten().map(String::as_str).collect();
+        for g in &d.groups {
+            assert!(
+                !glossary.contains(g[0].as_str()),
+                "ディストラクタ {:?} が用語集と重複しています",
+                g[0]
+            );
+        }
+        // ディストラクタ内でも語は一意であること。
+        let mut seen = std::collections::HashSet::new();
+        for g in &d.groups {
+            assert!(seen.insert(g[0].as_str()), "ディストラクタ内で {:?} が重複", g[0]);
+        }
+    }
+
+    #[test]
+    fn distractors_contain_hub_tags() {
+        // 連鎖暴走の橋になりやすいハブ語(汎用短トークン)が含まれていることを保証する。
+        let flat: std::collections::HashSet<String> = default_distractors()
+            .groups
+            .iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for t in ["1", "2B", "3D"] {
+            assert!(flat.contains(t), "ハブ語 {t} がディストラクタに見つかりません");
+        }
+        // 規模も連鎖暴走の前提。ある程度の語数を確保しておく。
+        assert!(
+            flat.len() >= 200,
+            "ディストラクタが少なすぎます(連鎖暴走の再現には規模が要る): {}",
+            flat.len()
+        );
     }
 
     #[test]

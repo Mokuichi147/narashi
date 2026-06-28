@@ -7,7 +7,7 @@
 
 ## 仕組み
 
-- **類似度判定**: 多言語埋め込みモデル(既定: `bge-m3`)でベクトル化し、コサイン類似度を**モデル固有のベースライン基準で 0〜100 スコアに校正**(高帯域に偏りがちなコサイン値を識別しやすいスケールへ展開)
+- **類似度判定**: 多言語埋め込みモデル(既定: `bge-m3`)でベクトル化し、コサイン類似度を**全モデル共通のベースライン基準(`SCORE_BASELINE`)で 0〜100 スコアに校正**(高帯域に偏りがちなコサイン値を 70 付近で調整できるスケールへ展開)。適切な閾値はモデルごとに異なるため、モデルを替えたら閾値も調整する
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
 - **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
@@ -27,7 +27,7 @@ cargo install narashi
 
 ```sh
 $ narashi "白い背景" "白背景"
-白い背景 ⇔ 白背景: 99.4
+白い背景 ⇔ 白背景: 92.3
 → 「白背景」に統合
 ```
 
@@ -35,7 +35,7 @@ $ narashi "白い背景" "白背景"
 
 ```sh
 $ narashi "頬紅" "照れ"
-頬紅 ⇔ 照れ: 51.5
+頬紅 ⇔ 照れ: 0.0
 (閾値 70.0 未満のため統合なし)
 ```
 
@@ -73,8 +73,8 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 | `mpnet` | paraphrase-multilingual-mpnet-base-v2 | 768 | clusterF1 0.567。要 高め閾値(~86) |
 | `paraphrase-q` | paraphrase MiniLM 量子化版 | 384 | 高速だが現環境の ONNX Runtime では実行時エラー |
 | `e5-instruct` | multilingual-e5-large-instruct | 1024 | **Candle バックエンド**。外部重み付き ONNX で従来は利用できなかった指示対応 E5。clusterF1 真ピーク 0.645(gte 未満)・誤統合 75 件と最多で Candle CPU で低速のため既定には非推奨だが、ONNX 非依存環境向けの選択肢。約 1.1GB |
-| `qwen3` | Qwen3-Embedding-0.6B | 1024 | **Candle バックエンド**(last-token プーリング)。clusterF1 0.764・誤統合 10 件で bge-m3 を精度で上回る。デコーダ系で Candle CPU の推論が bge-m3 の約 12 倍と低速のため既定にはせず、精度重視/ONNX 非依存環境向け。約 1.2GB |
-| `qwen3-4b` | Qwen3-Embedding-4B | 2560 | **Candle バックエンド**(last-token・f16)。**clusterF1 0.956(P=0.963・誤統合 7 件)で全モデル中最高精度**。ただし推論が ≈3.9 秒/語と極めて低速・約 8GB RAM 必須のため、GPU・バッチ・オフライン等で速度を許容できる精度最優先用途向け。約 8GB |
+| `qwen3` | Qwen3-Embedding-0.6B | 1024 | **Candle バックエンド**(last-token プーリング)。clusterF1 0.764・誤統合 10 件で bge-m3 を精度で上回るが、堅牢性ベンチで暴走オンセット 94・実用的な安全運用点が無く既定には不適。軽量枠。約 1.2GB |
+| `qwen3-4b` | Qwen3-Embedding-4B | 2560 | **Candle バックエンド**(last-token・f16)。**Candle 単独ビルドの既定モデル**(暴走オンセット 82・安全運用点 @83 で R≈0.75)。clusterF1 0.956(P=0.963・誤統合 7 件)で全モデル中ほぼ最高精度。推論が CPU では ≈3.9 秒/語と低速・約 8GB RAM のため GPU 推奨。約 8GB |
 | `qwen3-8b` | Qwen3-Embedding-8B | 4096 | **Candle バックエンド**(eval 用)。4B と同経路。約 16GB RAM 必須でさらに低速。十分な RAM の環境での検証用 |
 
 ### 実行バックエンド(フィーチャ)
@@ -91,7 +91,8 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 
   ```sh
   cargo install narashi --no-default-features --features candle,cli
-  # 既定モデルは qwen3(Qwen3-Embedding-0.6B)に自動で切り替わります
+  # 既定モデルは qwen3-4b(Qwen3-Embedding-4B)・既定閾値は 83 に自動で切り替わります
+  # 4B は f16 のため GPU 推奨(--features candle,cuda,cli など)
   ```
 
 ライブラリとして使うだけなら `cli` を外して `clap` 依存を省けます(例: `default-features = false, features = ["candle"]`)。

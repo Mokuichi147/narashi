@@ -71,9 +71,32 @@ pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
 
 /// 既定の統合閾値 (0〜100)
 ///
-/// 既定モデルでこの値以上のスコアを持つペアが統合されます。CLI の `--threshold`
-/// 既定値および評価ベンチマークの基準として共有されます。
+/// この値以上のスコアを持つペアが統合されます。CLI の `--threshold` 既定値および
+/// 評価ベンチマークの開始点として共有されます。**適切な閾値はモデルごとに異なる**ため、
+/// 既定モデルが異なるバックエンドごとに値を変えています。モデルを切り替えるときは
+/// `examples/fine_sweep`(品質ピーク)と `examples/robustness`(連鎖暴走しない上限)で確認のこと。
+///
+/// ONNX 既定の bge-m3 は暴走オンセット 52 で、70 は安全側にある。
+#[cfg(feature = "onnx")]
 pub const DEFAULT_THRESHOLD: f32 = 70.0;
+
+/// Candle 単独ビルドの既定 qwen3-4b は暴走オンセット 82 のため、その直上で安全側の 83 を既定とする
+/// (@83 で巻込2・R≈0.75。`docs/benchmarks.md` の堅牢性表を参照)。
+#[cfg(all(not(feature = "onnx"), feature = "candle"))]
+pub const DEFAULT_THRESHOLD: f32 = 83.0;
+
+/// スコア校正のベースライン余弦値(全モデル共通・モデル非依存)
+///
+/// コサイン類似度を 0〜100 のスコアへ写像する際の基準。この値を 0、完全一致 1.0 を 100 と
+/// する一次変換 `score = (cos - baseline) / (1 - baseline) * 100` を全モデルに一律で適用する。
+/// 埋め込みのコサインは高帯域(0.85〜1.0)に偏りがちなので、ベースラインを引くことで実用的な
+/// 閾値が 95 付近ではなく 70 付近に来るよう広げる。`0.7` は cos 0.85→50 / cos 0.91→70 /
+/// cos 0.95→83 に対応する(全モデルの暴走オンセット実測から、主要モデルの安全運用点が 70 前後に
+/// 来るよう選定。`docs/benchmarks.md` 参照)。
+///
+/// モデルごとの分布差は閾値そのもの(モデル別に選ぶ)で吸収する方針とし、ここはモデルに
+/// 依存しない単一定数とする。
+pub const SCORE_BASELINE: f32 = 0.7;
 
 pub mod eval;
 
@@ -82,8 +105,9 @@ pub mod eval;
 /// 用語集ベンチマーク v2(日本語・英語・中国語混在・難正例/難負例を含む)で **ONNX 勢の
 /// clusterF1 真ピーク 0.699 が最高**、かつピーク時適合率 P=0.939・誤統合わずか 7 件と**最も
 /// 誤統合が少ない**。精度(clusterF1)・誤統合の少なさ・サイズ(約 1.06GB)のすべてで従来既定の
-/// gte(0.657 / 誤統合 27 件 / 1.2GB)を上回る。校正(`cos_baseline=0.072`)により
-/// clusterF1 真ピークを既定閾値 [`DEFAULT_THRESHOLD`] ちょうどで達成する。
+/// gte(0.657 / 誤統合 27 件 / 1.2GB)を上回る。スコア校正は全モデル共通の [`SCORE_BASELINE`] を
+/// 用いるため、**適切な運用閾値はモデルごとに異なる**(`examples/robustness` で連鎖暴走しない上限を
+/// 確認して [`DEFAULT_THRESHOLD`] から調整する)。
 ///
 /// 唯一の弱点は推論速度で、1024次元 + fp16(CPU)のため gte の約 3 倍(≈16ms/語)。
 /// バッチ用途では問題にならないが、速度重視なら `--model gte`(約 1/3 の推論時間・
@@ -93,10 +117,12 @@ pub mod eval;
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
 
 /// ONNX Runtime を取得できない環境(`--no-default-features --features candle`)向けの既定モデル。
-/// bge-m3 は ONNX バックエンド専用のため、Candle 単独ビルドでは Candle 系の Qwen3-Embedding-0.6B を
-/// 既定にすることで、モデル未指定でもそのまま動作できるようにする。
+/// bge-m3 は ONNX バックエンド専用のため、Candle 単独ビルドでは Candle 系の Qwen3-Embedding-4B を
+/// 既定にする。堅牢性ベンチで暴走オンセット 82・安全運用点 @83 で R≈0.75 と、Candle 勢で堅牢性 ×
+/// 再現率のバランスが良い(精度上限の 8B は約 16GB の VRAM/RAM を要するため既定にはしない。最軽量の
+/// 0.6B は暴走オンセット 94 で実用的な安全運用点が無く不適)。f16・要 GPU(CPU では低速)。
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
-pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding0_6B);
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding4B);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
@@ -157,8 +183,7 @@ pub enum UserModel {
     /// (`model.onnx_data`)で fastembed の単一ファイル経路では読めず、従来の ONNX
     /// バックエンドでは利用できなかった**が、Candle バックエンドが safetensors を直接
     /// 読み込むことで利用可能になった。指示プレフィックス(`"Instruct: ... \nQuery: "`)を
-    /// 付与して対称類似度に用いる。`cos_baseline=0.67` に校正し clusterF1 真ピークを既定
-    /// 閾値 70 に合わせている。ただし真ピークは 0.645(gte 0.657 未満)で、真ピーク時の
+    /// 付与して対称類似度に用いる。真ピークは 0.645(gte 0.657 未満)で、真ピーク時の
     /// 誤統合 75 件と全モデル中最多・推論も Candle CPU で遅い(≈220–270ms/語)ため既定には
     /// 採用せず、Candle バックエンドの実例兼 ONNX 非依存環境の選択肢に留める
     /// (詳細は `docs/benchmarks.md`)。
@@ -170,7 +195,6 @@ pub enum UserModel {
     /// (Cls/Mean のみ)が非対応で従来は評価できなかった**が、Candle バックエンドが
     /// safetensors を直接読み、末尾(EOS)トークンの隠れ状態を取り出すことで利用可能に
     /// なった。指示プレフィックス(`"Instruct: ...\nQuery:"`)を付与して対称類似度に用いる。
-    /// `cos_baseline=0.69` に校正し clusterF1 真ピークを既定閾値 70 付近に合わせている。
     /// **clusterF1 真ピーク 0.764(bge-m3 0.699 超)** を P=0.926・
     /// 誤統合 10 件と高精度・高安全性で達成する。ただしデコーダ系で重く、推論は Candle CPU で
     /// 低速(≈200ms/語・bge-m3 の約 12 倍)かつ Candle 専用のため、**既定は速度重視で
@@ -247,18 +271,14 @@ enum BackendKind {
 
 /// モデルごとの取り扱いを記述したメタ情報
 ///
-/// モデルによって入力プレフィックスやコサイン類似度の分布が異なるため、
-/// トークナイザ取得元・プレフィックス・スコア校正のベースライン・プーリング・
-/// 実行バックエンドを切り替える。
+/// モデルによって入力プレフィックスやプーリング・実行バックエンドが異なるため切り替える。
+/// スコア校正のベースラインは全モデル共通の [`SCORE_BASELINE`] を用いるためここには持たない
+/// (モデル間の分布差は閾値そのものをモデルごとに選ぶことで吸収する)。
 struct ModelSpec {
     /// `tokenizer.json`(および重み)を取得する Hugging Face リポジトリ ID
     hf_repo: &'static str,
     /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
     query_prefix: &'static str,
-    /// スコア校正の基準となるコサイン値(無関係な短文ペアの典型的な下限)
-    ///
-    /// この値を 0、コサイン 1.0 を 100 に写像してスコアの識別力を高める。
-    cos_baseline: f32,
     /// プーリング方式(`Builtin` は fastembed が内部で決めるため未使用)
     pooling: Pool,
     /// 実行バックエンドと重みファイル
@@ -266,6 +286,9 @@ struct ModelSpec {
 }
 
 /// 指定モデルの取り扱いメタ情報を返す
+///
+/// スコア校正は全モデル共通の [`SCORE_BASELINE`] を用いるため、ここでは扱わない
+/// (各モデルの適切な運用閾値は `examples/fine_sweep`・`examples/robustness` で選ぶ)。
 fn model_spec(model: &Model) -> ModelSpec {
     match model {
         #[cfg(feature = "onnx")]
@@ -274,7 +297,6 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "onnx-community/gte-multilingual-base",
             // GTE は STS/類似度用途では指示プレフィックス無しの対称利用。
             query_prefix: "",
-            cos_baseline: 0.42,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model.onnx",
@@ -283,19 +305,15 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::DistiluseMultilingualV2) => ModelSpec {
             hf_repo: "Xenova/distiluse-base-multilingual-cased-v2",
             query_prefix: "",
-            // ピーク clusterF1 を既定閾値 70 に合わせる校正値(ベンチで決定)
-            cos_baseline: 0.39,
             pooling: Pool::Mean,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model.onnx",
             },
         },
         // IBM Granite Embedding 系(Apache 2.0・CLS プーリング・プレフィックス無し)。
-        // cos_baseline は暫定。採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
         Model::UserDefined(UserModel::GraniteMultilingual97mR2) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-97m-multilingual-r2",
             query_prefix: "",
-            cos_baseline: 0.42,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model.onnx",
@@ -304,7 +322,6 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::GraniteMultilingual107m) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-107m-multilingual",
             query_prefix: "",
-            cos_baseline: 0.42,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "model.onnx",
@@ -313,8 +330,6 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::GraniteMultilingual278m) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-278m-multilingual",
             query_prefix: "",
-            // clusterF1 真ピークが既定閾値 70 に来るよう校正(ベンチで決定)
-            cos_baseline: 0.44,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "model.onnx",
@@ -323,19 +338,15 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::GraniteMultilingual311mR2) => ModelSpec {
             hf_repo: "ibm-granite/granite-embedding-311m-multilingual-r2",
             query_prefix: "",
-            cos_baseline: 0.42,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model.onnx",
             },
         },
         // 大型・高精度候補(fp16 単一ファイル ONNX・CLS プーリング・プレフィックス無し)。
-        // cos_baseline は暫定。採用時にベンチで最適閾値が既定 70 に来るよう再校正する。
         Model::UserDefined(UserModel::BgeM3) => ModelSpec {
             hf_repo: "Xenova/bge-m3",
             query_prefix: "",
-            // clusterF1 真ピーク(cos≈0.72)が既定閾値 70 に来るよう校正(ベンチで決定)
-            cos_baseline: 0.072,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model_fp16.onnx",
@@ -344,7 +355,6 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::ArcticEmbedLV2) => ModelSpec {
             hf_repo: "Snowflake/snowflake-arctic-embed-l-v2.0",
             query_prefix: "",
-            cos_baseline: 0.42,
             pooling: Pool::Cls,
             backend: BackendKind::Onnx {
                 weights_file: "onnx/model_fp16.onnx",
@@ -355,10 +365,6 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "intfloat/multilingual-e5-large-instruct",
             // 指示対応 E5。対称類似度では同一の指示を両テキストに付与する。
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery: ",
-            // ベンチで clusterF1 真ピーク(cos≈0.90)が既定閾値 70 に来るよう校正。
-            // 真ピークは 0.645 と gte(0.657)未満かつ真ピーク時の誤統合 75 件と多いため
-            // 既定には採用せず eval 用の選択肢に留める(詳細は docs/benchmarks.md)。
-            cos_baseline: 0.67,
             pooling: Pool::Mean,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",
@@ -369,8 +375,6 @@ fn model_spec(model: &Model) -> ModelSpec {
             hf_repo: "Qwen/Qwen3-Embedding-0.6B",
             // Qwen3-Embedding 公式のクエリ書式。対称類似度では両テキストに同一指示を付与。
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
-            // ベンチで clusterF1 真ピーク(cos≈0.91)が既定閾値 70 に来るよう校正。
-            cos_baseline: 0.69,
             pooling: Pool::LastToken,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",
@@ -380,8 +384,6 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::Qwen3Embedding4B) => ModelSpec {
             hf_repo: "Qwen/Qwen3-Embedding-4B",
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
-            // ベンチ v2 で clusterF1 真ピーク 0.956 が既定閾値 70 に来ることを確認済み。
-            cos_baseline: 0.69,
             pooling: Pool::LastToken,
             backend: BackendKind::Candle {
                 // 4B は分割保存。単一 `model.safetensors` が無ければ index.json から
@@ -393,8 +395,6 @@ fn model_spec(model: &Model) -> ModelSpec {
         Model::UserDefined(UserModel::Qwen3Embedding8B) => ModelSpec {
             hf_repo: "Qwen/Qwen3-Embedding-8B",
             query_prefix: "Instruct: Retrieve semantically similar text.\nQuery:",
-            // 暫定。十分な RAM の環境でベンチして既定閾値 70 に来るよう再校正する。
-            cos_baseline: 0.69,
             pooling: Pool::LastToken,
             backend: BackendKind::Candle {
                 weights_file: "model.safetensors",
@@ -406,30 +406,29 @@ fn model_spec(model: &Model) -> ModelSpec {
 /// fastembed 組み込みモデルの取り扱いメタ情報を返す
 #[cfg(feature = "onnx")]
 fn builtin_spec(model: &EmbeddingModel) -> ModelSpec {
-    let (hf_repo, query_prefix, cos_baseline) = match model {
-        EmbeddingModel::MultilingualE5Small => ("intfloat/multilingual-e5-small", "query: ", 0.70),
-        EmbeddingModel::MultilingualE5Base => ("intfloat/multilingual-e5-base", "query: ", 0.70),
-        EmbeddingModel::MultilingualE5Large => ("intfloat/multilingual-e5-large", "query: ", 0.70),
+    let (hf_repo, query_prefix) = match model {
+        EmbeddingModel::MultilingualE5Small => ("intfloat/multilingual-e5-small", "query: "),
+        EmbeddingModel::MultilingualE5Base => ("intfloat/multilingual-e5-base", "query: "),
+        EmbeddingModel::MultilingualE5Large => ("intfloat/multilingual-e5-large", "query: "),
         EmbeddingModel::ParaphraseMLMiniLML12V2 | EmbeddingModel::ParaphraseMLMiniLML12V2Q => {
-            ("Xenova/paraphrase-multilingual-MiniLM-L12-v2", "", 0.30)
+            ("Xenova/paraphrase-multilingual-MiniLM-L12-v2", "")
         }
         EmbeddingModel::ParaphraseMLMpnetBaseV2 => {
-            ("Xenova/paraphrase-multilingual-mpnet-base-v2", "", 0.30)
+            ("Xenova/paraphrase-multilingual-mpnet-base-v2", "")
         }
         // --- 別系統モデル (比較用)。多言語特化ではないため精度比較のベースライン ---
         // BGE 中国語特化 (BAAI 系)。中国語には強いが日本語は学習外。
-        EmbeddingModel::BGESmallZHV15 => ("Xenova/bge-small-zh-v1.5", "", 0.30),
+        EmbeddingModel::BGESmallZHV15 => ("Xenova/bge-small-zh-v1.5", ""),
         // 英語 sentence-transformers (非多言語のベースライン)。
-        EmbeddingModel::AllMiniLML6V2 => ("Qdrant/all-MiniLM-L6-v2-onnx", "", 0.0),
+        EmbeddingModel::AllMiniLML6V2 => ("Qdrant/all-MiniLM-L6-v2-onnx", ""),
         // CLIP テキストエンコーダ (対照学習・全く別アーキテクチャ)。
-        EmbeddingModel::ClipVitB32 => ("Qdrant/clip-ViT-B-32-text", "", 0.0),
+        EmbeddingModel::ClipVitB32 => ("Qdrant/clip-ViT-B-32-text", ""),
         // 未対応モデルは E5 small 相当の保守的な既定で扱う
-        _ => ("intfloat/multilingual-e5-small", "query: ", 0.70),
+        _ => ("intfloat/multilingual-e5-small", "query: "),
     };
     ModelSpec {
         hf_repo,
         query_prefix,
-        cos_baseline,
         // 組み込みモデルのプーリングは fastembed が内部で決めるため未使用。
         pooling: Pool::Mean,
         backend: BackendKind::Builtin(model.clone()),
@@ -503,8 +502,6 @@ pub struct Narashi {
     tokenizer: Tokenizer,
     /// 埋め込み入力に付与するプレフィックス(モデル依存)
     query_prefix: &'static str,
-    /// スコア校正の基準コサイン値(モデル依存)
-    cos_baseline: f32,
 }
 
 /// 実行時の埋め込み器(バックエンドごとの実体)
@@ -701,15 +698,14 @@ impl Narashi {
             embedder,
             tokenizer,
             query_prefix: spec.query_prefix,
-            cos_baseline: spec.cos_baseline,
         })
     }
 
     /// 2つのテキストの類似度を 0〜100 で返す
     ///
-    /// 100 に近いほど類似。コサイン類似度をモデル固有のベースライン(無関係な
-    /// 短文ペアの典型的な下限)を 0、完全一致 1.0 を 100 として校正した値です。
-    /// これにより高帯域に偏りがちなコサイン値を識別しやすいスケールへ広げます。
+    /// 100 に近いほど類似。コサイン類似度を全モデル共通の [`SCORE_BASELINE`] を 0、
+    /// 完全一致 1.0 を 100 として校正した値です。これにより高帯域に偏りがちなコサイン値を
+    /// 識別しやすいスケールへ広げます。
     pub fn similarity(&self, a: &str, b: &str) -> Result<f32> {
         let embeddings = self.embed_normalized(&[a.to_string(), b.to_string()])?;
         Ok(self.score(dot(&embeddings[0], &embeddings[1])))
@@ -729,9 +725,9 @@ impl Narashi {
         Ok(embeddings)
     }
 
-    /// コサイン類似度を 0〜100 のスコアへ校正する(モデル依存のベースライン基準)
+    /// コサイン類似度を 0〜100 のスコアへ校正する(全モデル共通の [`SCORE_BASELINE`] 基準)
     pub(crate) fn score(&self, cos: f32) -> f32 {
-        ((cos - self.cos_baseline) / (1.0 - self.cos_baseline)).clamp(0.0, 1.0) * 100.0
+        ((cos - SCORE_BASELINE) / (1.0 - SCORE_BASELINE)).clamp(0.0, 1.0) * 100.0
     }
 
     /// テキスト群を表記ゆれごとにグループ化し、代表(canonical)を選出する
@@ -888,6 +884,18 @@ mod tests {
     }
 
     #[test]
+    fn score_uses_global_baseline() {
+        // 全モデル共通の SCORE_BASELINE で写像される。
+        // b=0.7 なら cos 0.85→50 / cos 0.91→70 / cos 0.95→83。設計値が変わったら気付けるように。
+        let b = SCORE_BASELINE;
+        assert!((score_with(b, 1.0) - 100.0).abs() < 1e-4);
+        assert!((score_with(b, b) - 0.0).abs() < 1e-4);
+        assert!((score_with(b, 0.85) - 50.0).abs() < 1.0);
+        assert!((score_with(b, 0.91) - 70.0).abs() < 1.0);
+        assert!((score_with(b, 0.95) - 83.3).abs() < 1.0);
+    }
+
+    #[test]
     fn options_resolution_precedence() {
         // SAFETY: mutates process env; single test avoids races with peers
         unsafe {
@@ -927,13 +935,12 @@ mod tests {
     #[ignore]
     fn real_similarity_high() {
         let n = Narashi::new().unwrap();
-        // 校正後スケール: 関連の強い表記ゆれは無関係ペアより明確に高くなる。
-        // 既定モデル bge-m3 では「猫」⇔「ネコ」≒65、「猫」⇔「自動車」≒46 と分離する
-        // (bge-m3 はコサインが高帯域に圧縮されるぶん gte より絶対差は小さいが順序は明確)。
+        // 全モデル共通の SCORE_BASELINE 校正後スケールでは、関連の強い表記ゆれは無関係ペアより
+        // 明確に高くなる(絶対値はモデルの余弦分布に依存するため、ここでは順序と分離を確認する)。
         let related = n.similarity("猫", "ネコ").unwrap();
         let unrelated = n.similarity("猫", "自動車").unwrap();
         assert!(
-            related > 60.0 && related > unrelated + 15.0,
+            related > unrelated + 10.0,
             "expected related ({related}) clearly above unrelated ({unrelated})"
         );
     }
