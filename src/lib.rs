@@ -8,6 +8,8 @@
 //!   0〜100 スコアに校正(高帯域に偏るコサイン値を識別しやすいスケールへ展開)
 //! - **汎用性判定**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを
 //!   代表 (canonical) として採用(短く・低IDなトークンで構成されるほど汎用的とみなす)
+//! - **言語優先**: [`Options::with_language_priority`] で、異言語が統合されたとき
+//!   どの言語の表記を代表に残すかを事前指定できる(例: `長髪` と `长发` で日本語を優先)
 //! - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア判定は並列化)
 //! - **モデル選択**: [`Options::with_model`] で同規模の対称類似度モデル等へ切替可能
 //!
@@ -56,8 +58,9 @@ use fastembed::{
 };
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 
 #[cfg(feature = "candle")]
@@ -440,6 +443,7 @@ fn builtin_spec(model: &EmbeddingModel) -> ModelSpec {
 pub struct Options {
     cache_dir: Option<PathBuf>,
     model: Option<Model>,
+    language_priority: Vec<Language>,
 }
 
 impl Options {
@@ -463,6 +467,20 @@ impl Options {
         self
     }
 
+    /// 代表(canonical)として残す言語の優先順位を指定する
+    ///
+    /// 異なる言語の表記が同じグループに統合されたとき、リストの先頭に近い言語の表記を
+    /// 優先して代表に採用します(例: `[Japanese, Chinese]` なら `長髪` と `长发` が
+    /// 統合されたとき `長髪` が残る)。同一言語内、およびリストに無い言語同士では従来どおり
+    /// 汎用性スコア `(トークン数, トークンID合計)` の小さい方を代表にします。
+    ///
+    /// 空(既定)のときは言語優先を行わず、従来どおり汎用性スコアのみで代表を決めます。
+    /// 言語判定の規則は [`Language`] / [`detect_language`] を参照してください。
+    pub fn with_language_priority(mut self, priority: impl IntoIterator<Item = Language>) -> Self {
+        self.language_priority = priority.into_iter().collect();
+        self
+    }
+
     /// 実際に使用する埋め込みモデルを解決する
     pub fn resolved_model(&self) -> Model {
         self.model.clone().unwrap_or(DEFAULT_MODEL)
@@ -477,6 +495,125 @@ impl Options {
             .or_else(|| std::env::var_os(CACHE_DIR_ENV).map(PathBuf::from))
             .unwrap_or_else(|| std::env::temp_dir().join("narashi"))
     }
+}
+
+/// テキストの表記に使われている言語(表記体系)
+///
+/// 代表(canonical)選出時の言語優先付け([`Options::with_language_priority`])で使います。
+/// 判定は表記体系ベースの軽量ヒューリスティックで、文単位の統計的言語判定ではありません。
+///
+/// - 仮名(ひらがな・カタカナ)を含む → [`Language::Japanese`]
+/// - ハングルを含む → [`Language::Korean`]
+/// - 仮名・ハングルを含まず漢字を含む →
+///   すべての漢字が日本語漢字(漢検級表)なら [`Language::Japanese`]、
+///   1 文字でも日本語に無い漢字(`长`・`发` 等の簡体字専用文字など)を含めば [`Language::Chinese`]
+/// - 上記いずれの文字も無くラテン文字を含む → [`Language::English`]
+/// - それ以外 → [`Language::Other`]
+///
+/// 純漢字語の日中判定は「簡体字専用文字を含むか」を決め手にするため、
+/// `長髪`(日本語)と `长发`(簡体中国語)を別言語として切り分けられます。一方で、
+/// 仮名を含まない繁体字(`計算機` など、すべて日本語漢字としても通用する字)は
+/// [`Language::Japanese`] に倒れます(本ツールが想定する日本語 ⇔ 簡体中国語の振り分けでは実害が小さい)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    /// 日本語
+    Japanese,
+    /// 中国語(主に簡体字)
+    Chinese,
+    /// 韓国語
+    Korean,
+    /// 英語(ラテン文字)
+    English,
+    /// 上記のいずれにも分類されない表記
+    Other,
+}
+
+impl Language {
+    /// 短い言語コード(`ja` / `zh` / `ko` / `en`)から変換する
+    ///
+    /// 大文字小文字は無視し、`jp`→`ja`、`cn`→`zh` などの別名も受け付けます。
+    /// 認識できないコードには `None` を返します。
+    pub fn from_code(code: &str) -> Option<Language> {
+        match code.trim().to_ascii_lowercase().as_str() {
+            "ja" | "jp" | "jpn" | "japanese" => Some(Language::Japanese),
+            "zh" | "cn" | "zho" | "chi" | "chinese" => Some(Language::Chinese),
+            "ko" | "kr" | "kor" | "korean" => Some(Language::Korean),
+            "en" | "eng" | "english" => Some(Language::English),
+            _ => None,
+        }
+    }
+}
+
+/// 日本語漢字(漢検級表に載る字)の集合を遅延構築して共有する
+///
+/// `kanji::level_table()` は日本で用いられる漢字のみを収録するため、ここに無い漢字
+/// (`长`・`发` 等の簡体字専用文字など)は「日本語に存在しない漢字」と判定できる。
+fn japanese_kanji_set() -> &'static HashSet<char> {
+    static SET: OnceLock<HashSet<char>> = OnceLock::new();
+    SET.get_or_init(|| kanji::level_table().keys().map(|k| k.get()).collect())
+}
+
+/// テキストの表記言語を判定する([`Language`] の規則を参照)
+pub fn detect_language(text: &str) -> Language {
+    let mut has_kana = false;
+    let mut has_hangul = false;
+    let mut has_kanji = false;
+    let mut has_non_jp_kanji = false;
+    let mut has_latin = false;
+
+    let jp_kanji = japanese_kanji_set();
+    for c in text.chars() {
+        if kanji::is_hiragana(c) || kanji::is_katakana(c) {
+            has_kana = true;
+        } else if is_hangul(c) {
+            has_hangul = true;
+        } else if kanji::is_kanji(c) {
+            has_kanji = true;
+            if !jp_kanji.contains(&c) {
+                has_non_jp_kanji = true;
+            }
+        } else if c.is_ascii_alphabetic() || c.is_alphabetic() {
+            has_latin = true;
+        }
+    }
+
+    if has_kana {
+        Language::Japanese
+    } else if has_hangul {
+        Language::Korean
+    } else if has_kanji {
+        if has_non_jp_kanji {
+            Language::Chinese
+        } else {
+            Language::Japanese
+        }
+    } else if has_latin {
+        Language::English
+    } else {
+        Language::Other
+    }
+}
+
+/// ハングル(音節・字母・互換字母)の範囲かどうか
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32,
+        0xAC00..=0xD7A3   // Hangul Syllables
+        | 0x1100..=0x11FF // Hangul Jamo
+        | 0x3130..=0x318F // Hangul Compatibility Jamo
+        | 0xA960..=0xA97F // Hangul Jamo Extended-A
+        | 0xD7B0..=0xD7FF // Hangul Jamo Extended-B
+    )
+}
+
+/// 優先言語リスト内での順位を返す(小さいほど優先・代表に残りやすい)
+///
+/// リストに含まれない言語はリスト長を返し、未指定言語同士は同順とみなす
+/// (その場合は従来の汎用性スコアで代表が決まる)。
+fn language_rank(lang: Language, priority: &[Language]) -> usize {
+    priority
+        .iter()
+        .position(|&p| p == lang)
+        .unwrap_or(priority.len())
 }
 
 /// 1つの統合グループ
@@ -502,6 +639,8 @@ pub struct Narashi {
     tokenizer: Tokenizer,
     /// 埋め込み入力に付与するプレフィックス(モデル依存)
     query_prefix: &'static str,
+    /// 代表選出で優先して残す言語の順位(空なら言語優先なし)
+    language_priority: Vec<Language>,
 }
 
 /// 実行時の埋め込み器(バックエンドごとの実体)
@@ -698,6 +837,7 @@ impl Narashi {
             embedder,
             tokenizer,
             query_prefix: spec.query_prefix,
+            language_priority: opts.language_priority,
         })
     }
 
@@ -733,7 +873,9 @@ impl Narashi {
     /// テキスト群を表記ゆれごとにグループ化し、代表(canonical)を選出する
     ///
     /// `threshold` (0〜100) 以上の類似度を持つペアは同じグループに統合されます。
-    /// 各グループの代表は `(トークン数, トークンID合計)` の辞書式最小によって決定されます。
+    /// 各グループの代表は、まず言語優先([`Options::with_language_priority`])、次に
+    /// 汎用性スコア `(トークン数, トークンID合計)` の辞書式最小によって決定されます。
+    /// 言語優先が未指定のときは汎用性スコアのみで決まります。
     pub fn normalize(&self, texts: &[String], threshold: f32) -> Result<Vec<Group>> {
         let n = texts.len();
         if n == 0 {
@@ -760,9 +902,15 @@ impl Narashi {
             uf.union(i, j);
         }
 
-        let keys: Vec<(usize, u64)> = texts
+        // 代表選出キー: (言語優先順位, トークン数, トークンID合計) の辞書式最小。
+        // 言語優先が未指定なら全テキストの順位が同値となり、従来どおり汎用性スコアのみで決まる。
+        let keys: Vec<(usize, usize, u64)> = texts
             .iter()
-            .map(|t| self.generality_key(t))
+            .map(|t| {
+                let (count, sum) = self.generality_key(t)?;
+                let rank = language_rank(detect_language(t), &self.language_priority);
+                Ok((rank, count, sum))
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let mut buckets: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -929,6 +1077,68 @@ mod tests {
         uf.union(1, 2);
         assert_eq!(uf.find(0), uf.find(2));
         assert_ne!(uf.find(0), uf.find(3));
+    }
+
+    #[test]
+    fn detect_language_basic() {
+        // 仮名を含めば日本語
+        assert_eq!(detect_language("マンガ"), Language::Japanese);
+        assert_eq!(detect_language("白い背景"), Language::Japanese);
+        // ハングルは韓国語、ラテンは英語
+        assert_eq!(detect_language("한국어"), Language::Korean);
+        assert_eq!(detect_language("hair"), Language::English);
+        // 数字・記号のみ等は Other
+        assert_eq!(detect_language("123"), Language::Other);
+    }
+
+    #[test]
+    fn detect_language_pure_kanji_ja_vs_zh() {
+        // ユーザーの主眼: 純漢字でも簡体字専用文字の有無で日中を切り分ける
+        assert_eq!(detect_language("長髪"), Language::Japanese);
+        assert_eq!(detect_language("长发"), Language::Chinese);
+        assert_eq!(detect_language("髪型"), Language::Japanese);
+        assert_eq!(detect_language("发型"), Language::Chinese);
+        // 1 文字でも非日本語漢字を含めば中国語に倒れる
+        assert_eq!(detect_language("学发"), Language::Chinese);
+    }
+
+    #[test]
+    fn language_rank_orders_by_priority() {
+        let pri = [Language::Japanese, Language::Chinese];
+        // リスト順に小さい順位、含まれない言語はリスト長(最下位・同値)
+        assert_eq!(language_rank(Language::Japanese, &pri), 0);
+        assert_eq!(language_rank(Language::Chinese, &pri), 1);
+        assert_eq!(language_rank(Language::Korean, &pri), 2);
+        assert_eq!(language_rank(Language::English, &pri), 2);
+        // 空リストでは全言語が同値 → 言語優先なし
+        assert_eq!(language_rank(Language::Japanese, &[]), 0);
+        assert_eq!(language_rank(Language::Chinese, &[]), 0);
+    }
+
+    #[test]
+    fn canonical_key_prefers_language_then_generality() {
+        // normalize の代表選出キー (言語順位, トークン数, ID合計) を模した最小化。
+        // 優先言語が最上位キーになるため、汎用性スコアが多少不利でも優先言語が残る。
+        let pri = [Language::Japanese, Language::Chinese];
+        let key = |lang: Language, count: usize, sum: u64| (language_rank(lang, &pri), count, sum);
+        // 長髪(日, 仮にトークン2/合計200) vs 长发(中, トークン1/合計10)
+        let ja = key(Language::Japanese, 2, 200);
+        let zh = key(Language::Chinese, 1, 10);
+        assert!(ja < zh, "優先言語(日本語)が汎用性で不利でも代表に残るべき");
+
+        // 言語優先なし(空リスト)なら従来どおり汎用性スコアで決まる
+        let none = |count: usize, sum: u64| (language_rank(Language::Japanese, &[]), count, sum);
+        assert!(none(1, 10) < none(2, 200));
+    }
+
+    #[test]
+    fn language_from_code_aliases() {
+        assert_eq!(Language::from_code("ja"), Some(Language::Japanese));
+        assert_eq!(Language::from_code("JP"), Some(Language::Japanese));
+        assert_eq!(Language::from_code("zh"), Some(Language::Chinese));
+        assert_eq!(Language::from_code(" en "), Some(Language::English));
+        assert_eq!(Language::from_code("ko"), Some(Language::Korean));
+        assert_eq!(Language::from_code("xx"), None);
     }
 
     #[test]

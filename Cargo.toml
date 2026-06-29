@@ -64,6 +64,9 @@ candle-nn = { version = "0.9.2", optional = true }
 candle-transformers = { version = "0.9.2", optional = true }
 serde_json = { version = "1", optional = true }
 tokenizers = { version = "0.21", default-features = false, features = ["http", "onig"] }
+# 代表選出の言語優先付けで使う日本語漢字(漢検級表)判定。簡体字専用文字を含む語を
+# 中国語、すべて日本語漢字で構成される語を日本語として切り分けるために用いる。
+kanji = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"], optional = true }
 hf-hub = "0.4"

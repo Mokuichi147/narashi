@@ -9,7 +9,7 @@
 
 - **類似度判定**: 多言語埋め込みモデル(既定: `bge-m3`)でベクトル化し、コサイン類似度を**全モデル共通のベースライン基準(`SCORE_BASELINE`)で 0〜100 スコアに校正**(高帯域に偏りがちなコサイン値を 70 付近で調整できるスケールへ展開)。適切な閾値はモデルごとに異なるため、モデルを替えたら閾値も調整する
 - **汎用性判定**: トークナイザーの ID 値で判定 (早く語彙化されたトークン = ID が小さい = 汎用的)
-- **統合優先度**: `(トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用
+- **統合優先度**: `(言語優先順位, トークン数, トークンID合計)` の辞書式比較で最小のものを代表として採用。言語優先(`--prefer-lang` / `Options::with_language_priority`)を指定すると、異言語が統合されたとき優先言語の表記を代表に残す(例: `長髪` と `长发` で日本語優先なら `長髪` が残る)。未指定時は従来どおり汎用性のみで決定
 - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア比較は埋め込みを一度だけ正規化し、内積で並列計算)
 - **モデル選択**: 既定は用語集ベンチマーク(日英中混在・難正例/難負例を含む v2 データセット)で ONNX 勢の clusterF1 が最高(0.699)かつ誤統合も最小(7 件)の `bge-m3`。速度を優先するなら `--model gte`(約 1/3 の推論時間)、軽量・最速を優先するなら他モデルへ `--model` で切替可能(選択肢は下の[オプション](#オプション)表、詳細な比較は [`docs/benchmarks.md`](docs/benchmarks.md))
 
@@ -49,12 +49,34 @@ $ narashi "白い背景" "白背景" "漫画" "マンガ" "頬紅" "照れ"
 [単独] 頬紅
 ```
 
+### 統合時に残す言語を優先する
+
+`長髪`(日本語)と `长发`(簡体中国語)のように、異なる言語の表記が統合されるとき、
+`--prefer-lang` で代表として残す言語の優先順位を指定できます(カンマ区切り)。
+
+```sh
+# 日本語を優先 → 「長髪」が残る
+$ narashi --prefer-lang ja,zh "長髪" "长发"
+[統合] 長髪 ← 长发
+
+# 中国語を優先 → 「长发」が残る
+$ narashi --prefer-lang zh,ja "長髪" "长发"
+[統合] 长发 ← 長髪
+```
+
+言語判定は表記体系ベースのヒューリスティックです。仮名を含めば日本語、ハングルを含めば
+韓国語、ラテン文字なら英語、漢字のみの語は **簡体字専用の文字(`长`・`发` 等)を含めば中国語・
+含まなければ日本語** と判定します(`长`・`发` は日本語では使われない字)。優先言語が指定されると
+代表選出はまず言語順位、次に従来の汎用性スコアで決まります。同一言語内・優先リストに無い言語
+同士では従来どおり汎用性スコアのみで決まります。
+
 ### オプション
 
 | フラグ | 説明 | デフォルト |
 | --- | --- | --- |
 | `-t, --threshold <N>` | 類似度の閾値 (0〜100) | `70.0` |
 | `--model <MODEL>` | 埋め込みモデル (`bge-m3` / `gte` / `granite` / `distiluse` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q` / `e5-instruct` / `qwen3` / `qwen3-4b` / `qwen3-8b`) | `bge-m3` |
+| `--prefer-lang <LANGS>` | 代表として優先して残す言語の順位 (カンマ区切り: `ja` / `zh` / `ko` / `en`) | (なし) |
 | `--cache-dir <PATH>` | モデルキャッシュの保存先 | OS の TEMP フォルダ下 / `narashi` |
 | `-h, --help` | ヘルプ表示 | |
 
@@ -211,6 +233,23 @@ use narashi::{EmbeddingModel, Narashi, Options};
 let opts = Options::new().with_model(EmbeddingModel::MultilingualE5Small);
 let n = Narashi::with_options(opts)?;
 ```
+
+### 統合時に残す言語の優先指定
+
+```rust
+use narashi::{Language, Narashi, Options};
+
+// 異言語が統合されたとき、日本語 → 中国語 の順で代表に残す
+let opts = Options::new().with_language_priority([Language::Japanese, Language::Chinese]);
+let n = Narashi::with_options(opts)?;
+
+let texts: Vec<String> = ["長髪", "长发"].iter().map(|s| s.to_string()).collect();
+let groups = n.normalize(&texts, 70.0)?;
+// => canonical=長髪 members=["长发", "長髪"]
+```
+
+優先言語が空(既定)のときは言語優先を行わず、従来どおり汎用性スコアのみで代表を決めます。
+個々のテキストの言語判定は `narashi::detect_language` で確認できます。
 
 ### キャッシュディレクトリの指定
 
