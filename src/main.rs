@@ -2,8 +2,14 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 #[cfg(feature = "onnx")]
 use narashi::EmbeddingModel;
-use narashi::{DEFAULT_THRESHOLD, Group, Model, Narashi, Options, UserModel};
+use narashi::{DEFAULT_THRESHOLD, Group, Language, Model, Narashi, Options, UserModel};
 use std::path::PathBuf;
+
+/// `--prefer-lang` の各要素を [`Language`] に変換する(`ja` / `zh` / `ko` / `en` など)
+fn parse_language(code: &str) -> Result<Language, String> {
+    Language::from_code(code)
+        .ok_or_else(|| format!("不明な言語コード: '{code}'(ja / zh / ko / en を指定してください)"))
+}
 
 /// CLI から選択できる埋め込みモデル
 ///
@@ -114,6 +120,13 @@ struct Cli {
     #[arg(long, env = "NARASHI_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
 
+    /// 代表として優先して残す言語の順位 (カンマ区切り: ja,zh,ko,en)
+    ///
+    /// 例: `--prefer-lang ja,zh` なら、異言語が統合されたとき日本語→中国語の順で代表を残す。
+    /// 未指定なら言語優先なし(従来どおり汎用性スコアのみで代表を決める)。
+    #[arg(long, value_delimiter = ',', value_parser = parse_language)]
+    prefer_lang: Vec<Language>,
+
     /// 比較するテキスト (2つ以上)
     #[arg(required = true, num_args = 2..)]
     texts: Vec<String>,
@@ -124,6 +137,9 @@ fn main() -> Result<()> {
     let mut opts = Options::new().with_model(cli.model);
     if let Some(dir) = cli.cache_dir {
         opts = opts.with_cache_dir(dir);
+    }
+    if !cli.prefer_lang.is_empty() {
+        opts = opts.with_language_priority(cli.prefer_lang);
     }
     let n = Narashi::with_options(opts)?;
 

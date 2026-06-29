@@ -21,9 +21,9 @@
 //! cargo run --release --no-default-features --features candle --example robustness -- qwen3
 //! ```
 use anyhow::Result;
-use narashi::eval::{default_distractors, default_glossary, sweep};
 #[cfg(feature = "onnx")]
 use narashi::EmbeddingModel;
+use narashi::eval::{default_distractors, default_glossary, sweep};
 use narashi::{Model, Narashi, Options, UserModel};
 
 /// このしきい値以上を「暴走」と判定する経験則(表示用)。
@@ -111,7 +111,8 @@ fn main() -> Result<()> {
         if r.cluster_f1 > peak.0 {
             peak = (r.cluster_f1, r.threshold);
         }
-        let runaway = r.largest_cluster_ratio >= RUNAWAY_RATIO || r.groups_in_largest >= RUNAWAY_GROUPS;
+        let runaway =
+            r.largest_cluster_ratio >= RUNAWAY_RATIO || r.groups_in_largest >= RUNAWAY_GROUPS;
         if runaway {
             runaway_top = Some(runaway_top.map_or(r.threshold, |t| t.max(r.threshold)));
         }
@@ -138,9 +139,7 @@ fn main() -> Result<()> {
                 RUNAWAY_RATIO * 100.0,
                 RUNAWAY_GROUPS
             );
-            println!(
-                "→ 運用閾値は暴走オンセット({t:.0})より安全マージンを取った上側で選ぶこと。"
-            );
+            println!("→ 運用閾値は暴走オンセット({t:.0})より安全マージンを取った上側で選ぶこと。");
             if peak.1 <= t {
                 println!(
                     "⚠ clusterF1 ピーク閾値 {:.0} は暴走域内。ピークに合わせると実データで崩壊する。",
