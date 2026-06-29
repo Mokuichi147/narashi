@@ -255,7 +255,8 @@ fn scored_pairs(n: &Narashi, glossary: &Glossary) -> Result<(usize, Vec<ScoredPa
 /// (健全なら 1、暴走すると無関係な多数グループを 1 クラスタが横断する)。
 fn largest_cluster_topology(roots: &[usize], group_ids: &[usize]) -> (usize, usize) {
     // 各根のメンバ添字を集める。
-    let mut members: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    let mut members: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
     for (i, &r) in roots.iter().enumerate() {
         members.entry(r).or_default().push(i);
     }
@@ -853,10 +854,10 @@ mod tests {
         // 低閾値で 0-1-2-3 が 1 クラスタへ連鎖する。トポロジー指標がこれを捉える。
         let group_ids = vec![0usize, 0, 1, 1, 2];
         let scored: Vec<ScoredPair> = vec![
-            (0, 1, 100.0, true),  // group0 内
-            (2, 3, 100.0, true),  // group1 内
-            (1, 2, 90.0, false),  // 橋(異グループ)
-            (3, 4, 10.0, false),  // 弱い無関係ペア
+            (0, 1, 100.0, true), // group0 内
+            (2, 3, 100.0, true), // group1 内
+            (1, 2, 90.0, false), // 橋(異グループ)
+            (3, 4, 10.0, false), // 弱い無関係ペア
         ];
         let rows = sweep_from_scored(5, &scored, &group_ids, &[50.0, 95.0]);
         // 閾値 50: 橋が生きて 4 語が連鎖、2 グループを横断。
@@ -888,7 +889,11 @@ mod tests {
         // ディストラクタ内でも語は一意であること。
         let mut seen = std::collections::HashSet::new();
         for g in &d.groups {
-            assert!(seen.insert(g[0].as_str()), "ディストラクタ内で {:?} が重複", g[0]);
+            assert!(
+                seen.insert(g[0].as_str()),
+                "ディストラクタ内で {:?} が重複",
+                g[0]
+            );
         }
     }
 
@@ -902,7 +907,10 @@ mod tests {
             .cloned()
             .collect();
         for t in ["1", "2B", "3D"] {
-            assert!(flat.contains(t), "ハブ語 {t} がディストラクタに見つかりません");
+            assert!(
+                flat.contains(t),
+                "ハブ語 {t} がディストラクタに見つかりません"
+            );
         }
         // 規模も連鎖暴走の前提。ある程度の語数を確保しておく。
         assert!(
