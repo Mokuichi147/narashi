@@ -17,6 +17,10 @@ fn pick(arg: Option<&str>) -> (Model, &'static str) {
         Some("qwen3") => (U::Qwen3Embedding0_6B.into(), "qwen3"),
         Some("qwen3-4b") => (U::Qwen3Embedding4B.into(), "qwen3-4b"),
         Some("e5-instruct") => (U::E5LargeInstruct.into(), "e5-instruct"),
+        #[cfg(feature = "openai")]
+        Some("openai-small") => (U::OpenAiTextEmbedding3Small.into(), "openai-small"),
+        #[cfg(feature = "openai")]
+        Some("openai-large") => (U::OpenAiTextEmbedding3Large.into(), "openai-large"),
         #[cfg(feature = "onnx")]
         Some("small") => (narashi::EmbeddingModel::MultilingualE5Small.into(), "small"),
         #[cfg(feature = "onnx")]

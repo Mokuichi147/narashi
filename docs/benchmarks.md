@@ -257,6 +257,12 @@ per_text は語あたりで内容非依存のため単一セッション値(参�
 - **snowflake-arctic-embed-l-v2.0 は見送り**。検索特化のため対称類似度で低調(真ピーク 0.495・@52)。
   素の bge-m3(0.699)が大差で上回り、検索特化の再学習が本タスクには逆効果と分かる
   (`--example benchmark -- arctic-l`)。
+- **OpenAI text-embedding-3-small / -large(`--model openai-small` / `openai-large`)は未計測**。
+  OpenAI API バックエンド(`openai` フィーチャ)として組み込み済みだが、計測には `OPENAI_API_KEY` と
+  ネットワーク接続(および API 利用料)が必要なため、本表の数値は無い。計測する場合は他モデルと同様に
+  `--example benchmark` / `fine_sweep` / `robustness` に `openai-small` / `openai-large` を渡す
+  (**採用判断は真ピークと暴走オンセットで行い、運用閾値もそこから選ぶ**こと)。それまでの暫定運用閾値は
+  既定の 70 から `robustness` で確認して調整する。
 - **校正の含意**: スコア校正は全モデル共通(`SCORE_BASELINE=0.7`)。最適閾値がモデルで異なるのは余弦分布の
   違いであって優劣ではない。**運用閾値はモデルごとに `robustness` の暴走オンセットを見て選ぶ**。この表の
   「最適閾値」は計測時点の値なので、閾値の数字は測り直す(clusterF1 等の値は校正非依存で有効)。

@@ -2123,6 +2123,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "tokenizers",
+ "ureq",
 ]
 
 [[package]]

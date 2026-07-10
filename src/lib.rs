@@ -11,7 +11,9 @@
 //! - **言語優先**: [`Options::with_language_priority`] で、異言語が統合されたとき
 //!   どの言語の表記を代表に残すかを事前指定できる(例: `長髪` と `长发` で日本語を優先)
 //! - **グルーピング**: 閾値以上のペアを union-find で連結成分化(ペア判定は並列化)
-//! - **モデル選択**: [`Options::with_model`] で同規模の対称類似度モデル等へ切替可能
+//! - **モデル選択**: [`Options::with_model`] で同規模の対称類似度モデル等へ切替可能。
+//!   ローカル推論(ONNX / Candle)に加え、OpenAI Embeddings API(text-embedding-3 系、
+//!   要 `OPENAI_API_KEY`)も `openai` フィーチャで利用できる
 //!
 //! # 使い方
 //!
@@ -56,7 +58,10 @@ use fastembed::{
     InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
-use hf_hub::api::sync::{ApiBuilder, ApiRepo};
+use hf_hub::api::sync::ApiBuilder;
+// ApiRepo はローカル推論バックエンドの重み取得ヘルパでのみ使う。
+#[cfg(any(feature = "onnx", feature = "candle"))]
+use hf_hub::api::sync::ApiRepo;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -65,9 +70,15 @@ use tokenizers::Tokenizer;
 
 #[cfg(feature = "candle")]
 mod candle_backend;
+#[cfg(feature = "openai")]
+mod openai_backend;
+#[cfg(feature = "openai")]
+pub use openai_backend::{API_KEY_ENV as OPENAI_API_KEY_ENV, BASE_URL_ENV as OPENAI_BASE_URL_ENV};
 
-#[cfg(not(any(feature = "onnx", feature = "candle")))]
-compile_error!("少なくとも 1 つのバックエンド機能(`onnx` または `candle`)を有効にしてください");
+#[cfg(not(any(feature = "onnx", feature = "candle", feature = "openai")))]
+compile_error!(
+    "少なくとも 1 つのバックエンド機能(`onnx` / `candle` / `openai`)を有効にしてください"
+);
 
 /// キャッシュ保存先を上書きするための環境変数名 (`NARASHI_CACHE_DIR`)
 pub const CACHE_DIR_ENV: &str = "NARASHI_CACHE_DIR";
@@ -87,6 +98,12 @@ pub const DEFAULT_THRESHOLD: f32 = 70.0;
 /// (@83 で巻込2・R≈0.75。`docs/benchmarks.md` の堅牢性表を参照)。
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
 pub const DEFAULT_THRESHOLD: f32 = 83.0;
+
+/// OpenAI 単独ビルド(`--no-default-features --features openai[,cli]`)の暫定既定値。
+/// text-embedding-3 系は用語集ベンチ未計測のため、ONNX 既定と同じ 70 を置く
+/// (計測後に `examples/fine_sweep` / `examples/robustness` の結果で見直すこと)。
+#[cfg(all(not(feature = "onnx"), not(feature = "candle"), feature = "openai"))]
+pub const DEFAULT_THRESHOLD: f32 = 70.0;
 
 /// スコア校正のベースライン余弦値(全モデル共通・モデル非依存)
 ///
@@ -126,6 +143,11 @@ pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::BgeM3);
 /// 0.6B は暴走オンセット 94 で実用的な安全運用点が無く不適)。f16・要 GPU(CPU では低速)。
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
 pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::Qwen3Embedding4B);
+
+/// OpenAI 単独ビルド向けの既定モデル。ローカル推論バックエンドが無いビルドでは
+/// API モデルのうちコスト・速度バランスの良い text-embedding-3-small を既定とする。
+#[cfg(all(not(feature = "onnx"), not(feature = "candle"), feature = "openai"))]
+pub const DEFAULT_MODEL: Model = Model::UserDefined(UserModel::OpenAiTextEmbedding3Small);
 
 /// fastembed の組み込みカタログに無いユーザー定義モデル
 ///
@@ -220,6 +242,22 @@ pub enum UserModel {
     /// 経路(分割 safetensors・f16)。f16 でも約 16GB RAM を要し推論はさらに低速。十分な RAM の
     /// 環境向けの検証用(詳細は `docs/benchmarks.md`)。
     Qwen3Embedding8B,
+    /// OpenAI text-embedding-3-small(**OpenAI API バックエンド専用**)
+    ///
+    /// OpenAI Embeddings API で埋め込む API モデル(1536次元)。ローカル推論を行わず、
+    /// モデルのダウンロードも不要な代わりに **API キー([`OPENAI_API_KEY_ENV`] または
+    /// [`Options::with_openai_api_key`])とネットワーク接続が必要**で、テキストは
+    /// OpenAI へ送信される。代表選出のトークン数計算には同系トークナイザ cl100k_base
+    /// (`Xenova/text-embedding-ada-002` の `tokenizer.json`)を用いる。
+    /// 用語集ベンチは未計測のため、運用閾値は `examples/fine_sweep` /
+    /// `examples/robustness` で確認して選ぶこと。
+    OpenAiTextEmbedding3Small,
+    /// OpenAI text-embedding-3-large(**OpenAI API バックエンド専用**)
+    ///
+    /// text-embedding-3 系の高精度版(3072次元)。取り扱いは
+    /// [`UserModel::OpenAiTextEmbedding3Small`] と同じ(要 API キー・テキストは
+    /// OpenAI へ送信・ベンチ未計測)。
+    OpenAiTextEmbedding3Large,
 }
 
 /// narashi が利用できる埋め込みモデルの選択
@@ -234,6 +272,15 @@ pub enum Model {
     Builtin(EmbeddingModel),
     /// HF リポジトリから読み込むユーザー定義モデル
     UserDefined(UserModel),
+    /// OpenAI Embeddings API(または互換 API)へ渡す任意のモデル名を直接指定する
+    /// (**OpenAI API バックエンド専用**)。
+    ///
+    /// カタログ([`UserModel::OpenAiTextEmbedding3Small`] 等)に無いモデル(ローカル
+    /// サーバーが独自名で提供する埋め込みモデル等)を使うときに使う。ローカルへ
+    /// ダウンロードするのは代表選出用のトークナイザ(cl100k_base)のみで、モデルの
+    /// 重み自体は取得しない(埋め込みは API から取得する)。
+    #[cfg(feature = "openai")]
+    OpenAi(String),
 }
 
 #[cfg(feature = "onnx")]
@@ -270,6 +317,10 @@ enum BackendKind {
     Onnx { weights_file: &'static str },
     /// `ModelSpec::hf_repo` の safetensors を Candle で直接読み込む(例: `"model.safetensors"`)
     Candle { weights_file: &'static str },
+    /// OpenAI Embeddings API を呼び出す(重みのダウンロード無し・要 API キー)。
+    /// `model` は API に渡すモデル名(例: `"text-embedding-3-small"`)。
+    /// [`Model::OpenAi`] 経由なら任意の文字列を持てる。
+    OpenAi { model: String },
 }
 
 /// モデルごとの取り扱いを記述したメタ情報
@@ -282,7 +333,9 @@ struct ModelSpec {
     hf_repo: &'static str,
     /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
     query_prefix: &'static str,
-    /// プーリング方式(`Builtin` は fastembed が内部で決めるため未使用)
+    /// プーリング方式(`Builtin` は fastembed が内部で決めるため未使用。
+    /// OpenAI 単独ビルドではプーリングが API 側で完結するため参照されない)
+    #[cfg_attr(not(any(feature = "onnx", feature = "candle")), allow(dead_code))]
     pooling: Pool,
     /// 実行バックエンドと重みファイル
     backend: BackendKind,
@@ -403,6 +456,37 @@ fn model_spec(model: &Model) -> ModelSpec {
                 weights_file: "model.safetensors",
             },
         },
+        // OpenAI API バックエンド専用。埋め込みは API が返すため hf_repo は代表選出用
+        // トークナイザ(cl100k_base の tokenizer.json 変換)の取得にのみ使う。
+        // text-embedding-3 系のトークナイザは ada-002 と同じ cl100k_base。
+        Model::UserDefined(UserModel::OpenAiTextEmbedding3Small) => ModelSpec {
+            hf_repo: "Xenova/text-embedding-ada-002",
+            query_prefix: "",
+            // プーリングは API 側で完結するため未使用。
+            pooling: Pool::Mean,
+            backend: BackendKind::OpenAi {
+                model: "text-embedding-3-small".to_string(),
+            },
+        },
+        Model::UserDefined(UserModel::OpenAiTextEmbedding3Large) => ModelSpec {
+            hf_repo: "Xenova/text-embedding-ada-002",
+            query_prefix: "",
+            pooling: Pool::Mean,
+            backend: BackendKind::OpenAi {
+                model: "text-embedding-3-large".to_string(),
+            },
+        },
+        // 任意のモデル名を直接指定する経路(ローカルサーバー等がカタログに無い名前の
+        // モデルを提供する場合向け)。トークナイザは他の OpenAI モデルと同じ cl100k_base。
+        #[cfg(feature = "openai")]
+        Model::OpenAi(name) => ModelSpec {
+            hf_repo: "Xenova/text-embedding-ada-002",
+            query_prefix: "",
+            pooling: Pool::Mean,
+            backend: BackendKind::OpenAi {
+                model: name.clone(),
+            },
+        },
     }
 }
 
@@ -444,6 +528,10 @@ pub struct Options {
     cache_dir: Option<PathBuf>,
     model: Option<Model>,
     language_priority: Vec<Language>,
+    #[cfg(feature = "openai")]
+    openai_api_key: Option<String>,
+    #[cfg(feature = "openai")]
+    openai_base_url: Option<String>,
 }
 
 impl Options {
@@ -464,6 +552,27 @@ impl Options {
     /// どちらも `Into<Model>` 経由で渡せる。
     pub fn with_model(mut self, model: impl Into<Model>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    /// OpenAI API キーを明示指定する(環境変数 [`OPENAI_API_KEY_ENV`] より優先)
+    ///
+    /// OpenAI API バックエンドのモデル([`UserModel::OpenAiTextEmbedding3Small`] 等)を
+    /// 使うときのみ参照されます。未指定なら環境変数から読みます。
+    #[cfg(feature = "openai")]
+    pub fn with_openai_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.openai_api_key = Some(api_key.into());
+        self
+    }
+
+    /// OpenAI 互換 API のエンドポイントを明示指定する(環境変数 [`OPENAI_BASE_URL_ENV`] より優先)
+    ///
+    /// OpenAI 本家以外(プロキシ・ローカルサーバ等)に向けるときに使う。指定時は
+    /// [`Options::with_openai_api_key`] / 環境変数のキーが無くても初期化できる
+    /// (キー不要なローカルサーバー向け)。
+    #[cfg(feature = "openai")]
+    pub fn with_openai_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.openai_base_url = Some(base_url.into());
         self
     }
 
@@ -651,6 +760,9 @@ enum Embedder {
     /// Candle(ピュア Rust)
     #[cfg(feature = "candle")]
     Candle(candle_backend::CandleEmbedder),
+    /// OpenAI Embeddings API(HTTPS)
+    #[cfg(feature = "openai")]
+    OpenAi(openai_backend::OpenAiEmbedder),
 }
 
 impl Embedder {
@@ -661,6 +773,8 @@ impl Embedder {
             Embedder::Onnx(e) => Ok(e.embed(inputs, None)?),
             #[cfg(feature = "candle")]
             Embedder::Candle(e) => e.embed(&inputs),
+            #[cfg(feature = "openai")]
+            Embedder::OpenAi(e) => e.embed(&inputs),
         }
     }
 }
@@ -822,6 +936,22 @@ impl Narashi {
                     return Err(anyhow!(
                         "モデル '{}' は Candle バックエンドが必要です(`--features candle` を有効にして再ビルドしてください)",
                         spec.hf_repo
+                    ));
+                }
+            }
+            BackendKind::OpenAi { model } => {
+                #[cfg(feature = "openai")]
+                {
+                    Embedder::OpenAi(openai_backend::OpenAiEmbedder::new(
+                        model,
+                        opts.openai_api_key.clone(),
+                        opts.openai_base_url.clone(),
+                    )?)
+                }
+                #[cfg(not(feature = "openai"))]
+                {
+                    return Err(anyhow!(
+                        "モデル '{model}' は OpenAI API バックエンドが必要です(`--features openai` を有効にして再ビルドしてください)"
                     ));
                 }
             }

@@ -78,6 +78,17 @@ fn main() -> Result<()> {
         Some("qwen3") => (UserModel::Qwen3Embedding0_6B.into(), "qwen3-embedding-0.6b"),
         Some("qwen3-4b") => (UserModel::Qwen3Embedding4B.into(), "qwen3-embedding-4b"),
         Some("qwen3-8b") => (UserModel::Qwen3Embedding8B.into(), "qwen3-embedding-8b"),
+        // OpenAI API バックエンド専用 (要 OPENAI_API_KEY・ネットワーク接続)
+        #[cfg(feature = "openai")]
+        Some("openai-small") => (
+            UserModel::OpenAiTextEmbedding3Small.into(),
+            "text-embedding-3-small",
+        ),
+        #[cfg(feature = "openai")]
+        Some("openai-large") => (
+            UserModel::OpenAiTextEmbedding3Large.into(),
+            "text-embedding-3-large",
+        ),
         // 別系統モデル (比較用ベースライン)
         Some("bge-zh") => (EmbeddingModel::BGESmallZHV15.into(), "bge-small-zh-v1.5"),
         Some("all-minilm") => (

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::{Parser, ValueEnum};
 #[cfg(feature = "onnx")]
 use narashi::EmbeddingModel;
@@ -61,14 +61,26 @@ enum ModelArg {
     #[cfg(feature = "candle")]
     #[value(name = "qwen3-8b")]
     Qwen38b,
+    /// OpenAI text-embedding-3-small (API・要 OPENAI_API_KEY・1536次元・テキストはOpenAIへ送信)
+    #[cfg(feature = "openai")]
+    #[value(name = "openai-small")]
+    OpenaiSmall,
+    /// OpenAI text-embedding-3-large (API・要 OPENAI_API_KEY・3072次元・テキストはOpenAIへ送信)
+    #[cfg(feature = "openai")]
+    #[value(name = "openai-large")]
+    OpenaiLarge,
 }
 
-/// 既定モデル。ONNX が有効なら bge-m3、Candle のみなら Qwen3-Embedding-4B
-/// (Candle 勢では暴走オンセット 82・安全運用点 @83 で R≈0.75 と堅牢性 × 再現率のバランスが最良)。
+/// 既定モデル名(`--model` の既定値文字列)。ONNX が有効なら bge-m3、Candle のみなら
+/// Qwen3-Embedding-4B(Candle 勢では暴走オンセット 82・安全運用点 @83 で R≈0.75 と
+/// 堅牢性 × 再現率のバランスが最良)。値は `ModelArg` の `value_enum` 名(kebab-case)と一致させる。
 #[cfg(feature = "onnx")]
-const DEFAULT_MODEL_ARG: ModelArg = ModelArg::BgeM3;
+const DEFAULT_MODEL_NAME: &str = "bge-m3";
 #[cfg(all(not(feature = "onnx"), feature = "candle"))]
-const DEFAULT_MODEL_ARG: ModelArg = ModelArg::Qwen34b;
+const DEFAULT_MODEL_NAME: &str = "qwen3-4b";
+// OpenAI 単独ビルドではローカル推論が無いため API モデルを既定にする。
+#[cfg(all(not(feature = "onnx"), not(feature = "candle"), feature = "openai"))]
+const DEFAULT_MODEL_NAME: &str = "openai-small";
 
 impl From<ModelArg> for Model {
     fn from(m: ModelArg) -> Self {
@@ -101,6 +113,10 @@ impl From<ModelArg> for Model {
             ModelArg::Qwen34b => UserModel::Qwen3Embedding4B.into(),
             #[cfg(feature = "candle")]
             ModelArg::Qwen38b => UserModel::Qwen3Embedding8B.into(),
+            #[cfg(feature = "openai")]
+            ModelArg::OpenaiSmall => UserModel::OpenAiTextEmbedding3Small.into(),
+            #[cfg(feature = "openai")]
+            ModelArg::OpenaiLarge => UserModel::OpenAiTextEmbedding3Large.into(),
         }
     }
 }
@@ -113,8 +129,14 @@ struct Cli {
     threshold: f32,
 
     /// 使用する埋め込みモデル
-    #[arg(long, value_enum, default_value_t = DEFAULT_MODEL_ARG)]
-    model: ModelArg,
+    ///
+    /// 既定はカタログ名(bge-m3 / gte / ... / openai-small / openai-large、選択肢は
+    /// `--help` 参照)から選ぶ。**`--openai-base-url` を指定した場合は、この値を
+    /// カタログ名としてではなく OpenAI 互換 API にそのまま渡すモデル名として使う**
+    /// (ローカルサーバーが独自名で提供するモデルを指定できる。ローカル推論やモデルの
+    /// ダウンロードは行わない)。
+    #[arg(long, default_value = DEFAULT_MODEL_NAME)]
+    model: String,
 
     /// モデルキャッシュの保存先 (既定: OSのTEMPフォルダ下)
     #[arg(long, env = "NARASHI_CACHE_DIR")]
@@ -127,19 +149,82 @@ struct Cli {
     #[arg(long, value_delimiter = ',', value_parser = parse_language)]
     prefer_lang: Vec<Language>,
 
+    /// OpenAI API キー(`--model openai-small` / `openai-large` 使用時。既定の OpenAI
+    /// エンドポイントに接続する場合のみ必須。`--openai-base-url` でローカルサーバー等に
+    /// 向ける場合は不要)
+    #[cfg(feature = "openai")]
+    #[arg(long, env = "OPENAI_API_KEY")]
+    openai_api_key: Option<String>,
+
+    /// OpenAI 互換 API のエンドポイント(既定: `https://api.openai.com/v1`)。
+    /// キー不要なローカルサーバー(Ollama / LM Studio 等)へ向けるときに指定する
+    #[cfg(feature = "openai")]
+    #[arg(long, env = "OPENAI_BASE_URL")]
+    openai_base_url: Option<String>,
+
     /// 比較するテキスト (2つ以上)
     #[arg(required = true, num_args = 2..)]
     texts: Vec<String>,
 }
 
+/// `--model` の値を解決する。
+///
+/// `openai_mode`(`--openai-base-url` 指定時)なら値をカタログ名としてではなく、
+/// OpenAI 互換 API へそのまま渡すモデル名として扱う(ローカルサーバーが独自名で
+/// 提供するモデルを指定できる。ローカル推論やモデルのダウンロードは行わない)。
+/// 利便性のため、カタログの `openai-small` / `openai-large` だけは実際の OpenAI
+/// API モデル名へ変換する。`openai_mode` が偽ならカタログ名として解釈する。
+fn resolve_model(name: &str, openai_mode: bool) -> Result<Model, String> {
+    #[cfg(feature = "openai")]
+    if openai_mode {
+        let literal = match name {
+            "openai-small" => "text-embedding-3-small",
+            "openai-large" => "text-embedding-3-large",
+            other => other,
+        };
+        return Ok(Model::OpenAi(literal.to_string()));
+    }
+    #[cfg(not(feature = "openai"))]
+    let _ = openai_mode;
+
+    ModelArg::from_str(name, false)
+        .map(Model::from)
+        .map_err(|_| {
+            let choices: Vec<String> = ModelArg::value_variants()
+                .iter()
+                .filter_map(|v| v.to_possible_value())
+                .map(|pv| pv.get_name().to_string())
+                .collect();
+            format!(
+                "不明なモデル: '{name}'(選択肢: {}。または --openai-base-url を指定すると \
+                 任意のモデル名を OpenAI 互換 API へ直接渡せます)",
+                choices.join(", ")
+            )
+        })
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut opts = Options::new().with_model(cli.model);
+    #[cfg(feature = "openai")]
+    let openai_mode = cli.openai_base_url.is_some();
+    #[cfg(not(feature = "openai"))]
+    let openai_mode = false;
+    let model = resolve_model(&cli.model, openai_mode).map_err(|e| anyhow!(e))?;
+    let mut opts = Options::new().with_model(model);
     if let Some(dir) = cli.cache_dir {
         opts = opts.with_cache_dir(dir);
     }
     if !cli.prefer_lang.is_empty() {
         opts = opts.with_language_priority(cli.prefer_lang);
+    }
+    #[cfg(feature = "openai")]
+    {
+        if let Some(key) = cli.openai_api_key {
+            opts = opts.with_openai_api_key(key);
+        }
+        if let Some(base_url) = cli.openai_base_url {
+            opts = opts.with_openai_base_url(base_url);
+        }
     }
     let n = Narashi::with_options(opts)?;
 
