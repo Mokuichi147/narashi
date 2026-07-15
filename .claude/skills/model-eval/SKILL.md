@@ -50,6 +50,7 @@ narashi 本体は **MIT / Apache-2.0 のデュアルライセンス**。新し�
 | `bge-zh`(比較用) | BAAI/bge-small-zh-v1.5 | MIT |
 | `all-minilm`(比較用) | sentence-transformers/all-MiniLM-L6-v2 | Apache 2.0 |
 | `clip`(比較用) | OpenAI CLIP (sentence-transformers/clip-ViT-B-32) | MIT |
+| `openai-small` / `openai-large`(API・未計測) | OpenAI text-embedding-3-small / -large(ダウンロード無しの API サービス) | OpenAI 利用規約 |
 
 ## 1. 用語集 (正解データ)
 
@@ -109,6 +110,10 @@ cargo run --example benchmark -- large 75      # 第2引数で閾値を指定
 cargo run --example benchmark -- bge-zh        # BGE 中国語特化
 cargo run --example benchmark -- all-minilm    # 英語 SentenceTransformers
 cargo run --example benchmark -- clip          # CLIP テキストエンコーダ
+# OpenAI API バックエンド(要 OPENAI_API_KEY・ネットワーク接続・API 利用料。
+# HF からのダウンロードは無く、代表選出は同梱の cl100k_base(tiktoken)で行う)
+cargo run --example benchmark -- openai-small  # text-embedding-3-small(未計測)
+cargo run --example benchmark -- openai-large  # text-embedding-3-large(未計測)
 
 # clusterF1 の真ピーク(1 刻み)— モデル間比較の主データ
 cargo run --example fine_sweep -- gte

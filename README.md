@@ -75,9 +75,11 @@ $ narashi --prefer-lang zh,ja "長髪" "长发"
 | フラグ | 説明 | デフォルト |
 | --- | --- | --- |
 | `-t, --threshold <N>` | 類似度の閾値 (0〜100) | `70.0` |
-| `--model <MODEL>` | 埋め込みモデル (`bge-m3` / `gte` / `granite` / `distiluse` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q` / `e5-instruct` / `qwen3` / `qwen3-4b` / `qwen3-8b`) | `bge-m3` |
+| `--model <MODEL>` | 埋め込みモデル (`bge-m3` / `gte` / `granite` / `distiluse` / `small` / `large` / `base` / `paraphrase` / `mpnet` / `paraphrase-q` / `e5-instruct` / `qwen3` / `qwen3-4b` / `qwen3-8b` / `openai-small` / `openai-large`)。**`--openai-base-url` 指定時はカタログ名ではなく API へ渡す生のモデル名として扱われる**(任意の文字列を指定可) | `bge-m3` |
 | `--prefer-lang <LANGS>` | 代表として優先して残す言語の順位 (カンマ区切り: `ja` / `zh` / `ko` / `en`) | (なし) |
 | `--cache-dir <PATH>` | モデルキャッシュの保存先 | OS の TEMP フォルダ下 / `narashi` |
+| `--openai-api-key <KEY>` | OpenAI API キー(`--openai-base-url` 未指定時に `--model openai-*` を使う場合のみ必須。環境変数 `OPENAI_API_KEY` でも指定可) | (なし) |
+| `--openai-base-url <URL>` | OpenAI 互換 API のエンドポイント。指定すると `--model` の解釈が切り替わる(環境変数 `OPENAI_BASE_URL` でも指定可。キー不要なローカルサーバー等へ向けるときに指定) | `https://api.openai.com/v1` |
 | `-h, --help` | ヘルプ表示 | |
 
 `--model` の選択肢(詳細な比較は [`docs/benchmarks.md`](docs/benchmarks.md)):
@@ -98,6 +100,8 @@ $ narashi --prefer-lang zh,ja "長髪" "长发"
 | `qwen3` | Qwen3-Embedding-0.6B | 1024 | **Candle バックエンド**(last-token プーリング)。clusterF1 0.764・誤統合 10 件で bge-m3 を精度で上回るが、堅牢性ベンチで暴走オンセット 94・実用的な安全運用点が無く既定には不適。軽量枠。約 1.2GB |
 | `qwen3-4b` | Qwen3-Embedding-4B | 2560 | **Candle バックエンド**(last-token・f16)。**Candle 単独ビルドの既定モデル**(暴走オンセット 82・安全運用点 @83 で R≈0.75)。clusterF1 0.956(P=0.963・誤統合 7 件)で全モデル中ほぼ最高精度。推論が CPU では ≈3.9 秒/語と低速・約 8GB RAM のため GPU 推奨。約 8GB |
 | `qwen3-8b` | Qwen3-Embedding-8B | 4096 | **Candle バックエンド**(eval 用)。4B と同経路。約 16GB RAM 必須でさらに低速。十分な RAM の環境での検証用 |
+| `openai-small` | OpenAI text-embedding-3-small | 1536 | **OpenAI API バックエンド**。ローカル推論・重みダウンロード不要だが **要 `OPENAI_API_KEY`・ネットワーク接続・テキストは OpenAI へ送信**。用語集ベンチ未計測のため閾値は要調整 |
+| `openai-large` | OpenAI text-embedding-3-large | 3072 | **OpenAI API バックエンド**。text-embedding-3 系の高精度版。取り扱いは `openai-small` と同じ(要 API キー・ベンチ未計測) |
 
 ### 実行バックエンド(フィーチャ)
 
@@ -105,10 +109,11 @@ $ narashi --prefer-lang zh,ja "長髪" "长发"
 
 | フィーチャ | バックエンド | 対象モデル | 備考 |
 | --- | --- | --- | --- |
-| `onnx`(既定) | ONNX Runtime(`fastembed`) | 上表の `e5-instruct` / `qwen3` 以外すべて | ネイティブの ONNX Runtime バイナリを取得・リンクする |
+| `onnx`(既定) | ONNX Runtime(`fastembed`) | 上表の `e5-instruct` / `qwen3` 系 / `openai` 系以外すべて | ネイティブの ONNX Runtime バイナリを取得・リンクする |
 | `candle`(既定) | Candle(ピュア Rust) | `e5-instruct`(XLM-RoBERTa)・`qwen3` / `qwen3-4b` / `qwen3-8b`(Qwen3 デコーダ) | ONNX で扱えないモデルも HF の safetensors から直接読み込む(`config.json` の `model_type` で判定。分割保存・f16 にも対応) |
+| `openai`(既定) | OpenAI Embeddings API(HTTPS) | `openai-small` / `openai-large` | ローカル推論なし。環境変数 `OPENAI_API_KEY`(またはライブラリの `Options::with_openai_api_key`)が必要。`OPENAI_BASE_URL` で OpenAI 互換 API へ切替可能。**テキストは API へ送信される** |
 
-- 既定の `cargo install narashi` は両バックエンドを含み、従来モデルに加えて `e5-instruct` も使えます。
+- 既定の `cargo install narashi` は全バックエンドを含み、従来モデルに加えて `e5-instruct` や `openai-small` 等も使えます。
 - `candle` のみでビルドすると、**ネイティブ ONNX Runtime バイナリを取得できない環境**(オフライン・制限ネットワーク等)でも動作します:
 
   ```sh
@@ -234,6 +239,78 @@ let opts = Options::new().with_model(EmbeddingModel::MultilingualE5Small);
 let n = Narashi::with_options(opts)?;
 ```
 
+### OpenAI API モデルの利用
+
+`openai-small` / `openai-large`(text-embedding-3 系)は OpenAI Embeddings API で埋め込みます。
+モデルのダウンロードは不要ですが、API キーとネットワーク接続が必要で、**テキストは OpenAI へ送信されます**。
+
+キー・エンドポイントは環境変数(`OPENAI_API_KEY` / `OPENAI_BASE_URL`)、CLI フラグ
+(`--openai-api-key` / `--openai-base-url`)、ライブラリの `Options` のいずれでも指定できます
+(優先順位は CLI フラグ・明示指定 > 環境変数)。
+
+```sh
+# 環境変数で指定
+$ export OPENAI_API_KEY=sk-...
+$ narashi --model openai-small "白い背景" "白背景"
+
+# CLI フラグで指定(環境変数を汚したくない場合)
+$ narashi --model openai-small --openai-api-key sk-... "白い背景" "白背景"
+```
+
+ライブラリからはキーを明示指定もできます(未指定なら環境変数 `OPENAI_API_KEY` を読みます):
+
+```rust
+use narashi::{Narashi, Options, UserModel};
+
+let opts = Options::new()
+    .with_model(UserModel::OpenAiTextEmbedding3Small)
+    .with_openai_api_key("sk-...");
+let n = Narashi::with_options(opts)?;
+```
+
+`--openai-base-url`(またはライブラリの `Options::with_openai_base_url` / 環境変数
+`OPENAI_BASE_URL`)を指定すると、OpenAI 互換の埋め込み API(プロキシ・Ollama / LM Studio /
+vLLM 等のローカルサーバ)へ向けられます(既定: `https://api.openai.com/v1`)。
+
+OpenAI API バックエンドでは **Hugging Face からのダウンロードは一切行いません**。埋め込みは
+API から取得し、代表選出のトークン数計算にはバイナリに同梱された cl100k_base(tiktoken。
+text-embedding-3 系の実トークナイザと同一)を使います。
+
+**ローカルサーバー等にエンドポイントを向けるときは API キーは不要です**(未設定なら
+`Authorization` ヘッダを送りません)。キーが必須になるのは既定の OpenAI 本家エンドポイントに
+接続する場合のみです。
+
+ライブラリから任意のモデル名を指定するには `Model::OpenAi` を使います(カタログの
+`UserModel` に無いモデル名を直接渡せます):
+
+```rust
+use narashi::{Model, Narashi, Options};
+
+let opts = Options::new()
+    .with_model(Model::OpenAi("my-embedding-model".to_string()))
+    .with_openai_base_url("http://localhost:8080/v1");
+let n = Narashi::with_options(opts)?;
+```
+
+```sh
+# 例: キー不要な OpenAI 互換のローカルサーバーを http://localhost:8080 で起動している場合
+$ narashi --model openai-small --openai-base-url http://localhost:8080/v1 "白い背景" "白背景"
+```
+
+**`--openai-base-url` を指定すると `--model` の意味が切り替わります**: カタログ名(`bge-m3` 等)
+としてではなく、**OpenAI 互換 API へそのまま渡すモデル名**として扱われます。ローカルサーバーが
+独自名でモデルを提供している場合はその名前を直接指定してください(ローカル推論やモデルの
+ダウンロードは一切行われません)。利便性のため `openai-small` / `openai-large` だけは実際の
+API モデル名(`text-embedding-3-small` / `-large`)へ変換されます。
+
+```sh
+# ローカルサーバーが "my-embedding-model" という名前でモデルを提供している場合
+$ narashi --model my-embedding-model --openai-base-url http://localhost:8080/v1 "白い背景" "白背景"
+```
+
+`--openai-base-url` を指定しない場合は従来どおり `--model` はカタログ名として解釈され、
+ローカル推論(ONNX / Candle)や OpenAI 本家への接続に使われます。
+
 ### 統合時に残す言語の優先指定
 
 ```rust
@@ -286,3 +363,4 @@ narashi はモデルの重みを同梱せず、実行時に Hugging Face から�
 | `mpnet` | [sentence-transformers/paraphrase-multilingual-mpnet-base-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-mpnet-base-v2) | Apache 2.0 |
 | `e5-instruct` | [intfloat/multilingual-e5-large-instruct](https://huggingface.co/intfloat/multilingual-e5-large-instruct)(safetensors を Candle で直接読込) | MIT |
 | `qwen3` / `qwen3-4b` / `qwen3-8b` | [Qwen/Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) / [4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) / [8B](https://huggingface.co/Qwen/Qwen3-Embedding-8B)(safetensors を Candle で直接読込) | Apache 2.0 |
+| `openai-small` / `openai-large` | OpenAI text-embedding-3-small / -large(ダウンロード無しの API サービス) | [OpenAI 利用規約](https://openai.com/policies/)に従う |
