@@ -272,9 +272,9 @@ let n = Narashi::with_options(opts)?;
 `OPENAI_BASE_URL`)を指定すると、OpenAI 互換の埋め込み API(プロキシ・Ollama / LM Studio /
 vLLM 等のローカルサーバ)へ向けられます(既定: `https://api.openai.com/v1`)。
 
-OpenAI API バックエンドでは **Hugging Face からのダウンロードは一切行いません**(埋め込みは
-API から取得し、代表選出はトークナイザを使わず文字ベースのキー(文字数・コードポイント合計)で
-行います)。
+OpenAI API バックエンドでは **Hugging Face からのダウンロードは一切行いません**。埋め込みは
+API から取得し、代表選出のトークン数計算にはバイナリに同梱された cl100k_base(tiktoken。
+text-embedding-3 系の実トークナイザと同一)を使います。
 
 **ローカルサーバー等にエンドポイントを向けるときは API キーは不要です**(未設定なら
 `Authorization` ヘッダを送りません)。キーが必須になるのは既定の OpenAI 本家エンドポイントに

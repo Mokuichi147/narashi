@@ -247,8 +247,9 @@ pub enum UserModel {
     /// OpenAI Embeddings API で埋め込む API モデル(1536次元)。ローカル推論を行わず、
     /// **Hugging Face からのダウンロードも一切無い**代わりに **API キー
     /// ([`OPENAI_API_KEY_ENV`] または [`Options::with_openai_api_key`])とネットワーク
-    /// 接続が必要**で、テキストは OpenAI へ送信される。代表選出はトークナイザを使わず
-    /// 文字ベースのフォールバックキー(文字数, コードポイント合計)で行う。
+    /// 接続が必要**で、テキストは OpenAI へ送信される。代表選出のトークン数計算には
+    /// クレート同梱の cl100k_base(tiktoken。text-embedding-3 系の実トークナイザと同一)を
+    /// 使うため、ダウンロードは発生しない。
     /// 用語集ベンチは未計測のため、運用閾値は `examples/fine_sweep` /
     /// `examples/robustness` で確認して選ぶこと。
     OpenAiTextEmbedding3Small,
@@ -277,8 +278,8 @@ pub enum Model {
     ///
     /// カタログ([`UserModel::OpenAiTextEmbedding3Small`] 等)に無いモデル(ローカル
     /// サーバーが独自名で提供する埋め込みモデル等)を使うときに使う。**ダウンロードは
-    /// 一切行わない**(埋め込みは API から取得し、代表選出はトークナイザを使わず
-    /// 文字ベースのフォールバックキーで行う)。
+    /// 一切行わない**(埋め込みは API から取得し、代表選出のトークン数計算はクレート
+    /// 同梱の cl100k_base(tiktoken)で行う)。
     #[cfg(feature = "openai")]
     OpenAi(String),
 }
@@ -330,8 +331,8 @@ enum BackendKind {
 /// (モデル間の分布差は閾値そのものをモデルごとに選ぶことで吸収する)。
 struct ModelSpec {
     /// `tokenizer.json`(および重み)を取得する Hugging Face リポジトリ ID。
-    /// `None` なら Hugging Face へ一切アクセスしない(代表選出は文字ベースの
-    /// フォールバックキーを使う。[`Model::OpenAi`] の任意モデル名経路が該当)
+    /// `None` なら Hugging Face へ一切アクセスしない(OpenAI API バックエンドの
+    /// モデルが該当。代表選出はクレート同梱の cl100k_base で行う)
     hf_repo: Option<&'static str>,
     /// 埋め込み入力に付与するプレフィックス(E5 系は `"query: "`、対称モデルは空)
     query_prefix: &'static str,
@@ -460,8 +461,8 @@ fn model_spec(model: &Model) -> ModelSpec {
         },
         // OpenAI API バックエンド専用。埋め込みは API が返すため、Hugging Face からは
         // 何もダウンロードしない(hf_repo: None)。OpenAI 互換 API にはトークン化だけを
-        // 行うエンドポイントが無いため、代表選出は文字ベースのフォールバックキー
-        // (文字数, コードポイント合計)で行う。
+        // 行うエンドポイントが無いため、代表選出のトークン数計算はクレート同梱の
+        // cl100k_base(tiktoken)で行う(text-embedding-3 系の実トークナイザと同一)。
         Model::UserDefined(UserModel::OpenAiTextEmbedding3Small) => ModelSpec {
             hf_repo: None,
             query_prefix: "",
@@ -741,6 +742,20 @@ pub struct Group {
     pub members: Vec<String>,
 }
 
+/// 代表選出の汎用性キー計算に使うトークナイザ(モデル系統ごとに実体が異なる)
+///
+/// 汎用性判定は「早く語彙化されたトークン = ID が小さい = 汎用的」という原理に
+/// 基づくため、必ずトークン単位で計算する(文字ベースの近似は行わない)。
+enum CanonTokenizer {
+    /// Hugging Face の `tokenizer.json`(ローカル推論バックエンドのモデル)
+    Hf(Box<Tokenizer>),
+    /// tiktoken の cl100k_base(OpenAI API バックエンド)。語彙はクレートに同梱
+    /// されているためダウンロード不要。text-embedding-3 系の実トークナイザと一致し、
+    /// 互換 API の任意モデルでも BPE のトークン単位キーとして機能する。
+    #[cfg(feature = "openai")]
+    Cl100k(tiktoken_rs::CoreBPE),
+}
+
 /// 表記ゆれ解消の本体
 ///
 /// 埋め込みモデルとトークナイザを保持し、類似度の計算とグルーピングを行います。
@@ -748,9 +763,8 @@ pub struct Group {
 /// 再利用してください。
 pub struct Narashi {
     embedder: Embedder,
-    /// 代表選出のトークン数計算に使うトークナイザ。`None`(OpenAI API バックエンド)なら
-    /// 文字ベースのフォールバックキーで代表を選出する
-    tokenizer: Option<Tokenizer>,
+    /// 代表選出のトークン数計算に使うトークナイザ
+    tokenizer: CanonTokenizer,
     /// 埋め込み入力に付与するプレフィックス(モデル依存)
     query_prefix: &'static str,
     /// 代表選出で優先して残す言語の順位(空なら言語優先なし)
@@ -977,20 +991,36 @@ impl Narashi {
             }
         };
 
-        // 代表選出のトークン数計算に使う独立したトークナイザ(hf_repo を持つモデルのみ)。
-        // hf_repo が None(OpenAI API バックエンド)ならダウンロードせず、代表選出は
-        // 文字ベースのフォールバックキーで行う(generality_key を参照)。
+        // 代表選出のトークン数計算に使う独立したトークナイザ。hf_repo を持つモデルは
+        // `tokenizer.json` を、hf_repo が None(OpenAI API バックエンド)のモデルは
+        // クレート同梱の cl100k_base(tiktoken)を使う(ダウンロード無し)。
         let tokenizer = match &repo {
             Some(repo) => {
                 let tokenizer_path = repo
                     .get("tokenizer.json")
                     .map_err(|e| anyhow!("tokenizer download failed: {e}"))?;
-                Some(
+                CanonTokenizer::Hf(Box::new(
                     Tokenizer::from_file(tokenizer_path)
                         .map_err(|e| anyhow!("tokenizer load failed: {e}"))?,
-                )
+                ))
             }
-            None => None,
+            None => {
+                // hf_repo: None は OpenAI バックエンドのモデルのみ。openai フィーチャが
+                // 無効ならバックエンド構築時点で既にエラーになっているため到達しない。
+                #[cfg(feature = "openai")]
+                {
+                    CanonTokenizer::Cl100k(
+                        tiktoken_rs::cl100k_base()
+                            .map_err(|e| anyhow!("cl100k_base の初期化に失敗しました: {e}"))?,
+                    )
+                }
+                #[cfg(not(feature = "openai"))]
+                {
+                    return Err(anyhow!(
+                        "このモデルは OpenAI API バックエンドが必要です(`--features openai` を有効にして再ビルドしてください)"
+                    ));
+                }
+            }
         };
         Ok(Self {
             embedder,
@@ -1096,12 +1126,12 @@ impl Narashi {
 
     /// 代表選出の汎用性キー `(トークン数, トークンID合計)` を返す
     ///
-    /// トークナイザが無いモデル(OpenAI API バックエンド)では、文字ベースの
-    /// フォールバック `(文字数, Unicode コードポイント合計)` を使う。辞書式比較で
-    /// 「短く・基本的な文字で構成されるほど汎用的」という同じ性質を近似する。
+    /// 「早く語彙化されたトークン = ID が小さい = 汎用的」という原理に基づくため、
+    /// 常にトークン単位で計算する。OpenAI API バックエンドではクレート同梱の
+    /// cl100k_base(tiktoken)を使う。
     fn generality_key(&self, text: &str) -> Result<(usize, u64)> {
         match &self.tokenizer {
-            Some(tokenizer) => {
+            CanonTokenizer::Hf(tokenizer) => {
                 let encoding = tokenizer
                     .encode(text, false)
                     .map_err(|e| anyhow!("tokenize failed: {e}"))?;
@@ -1110,9 +1140,11 @@ impl Narashi {
                 let sum: u64 = ids.iter().map(|&id| id as u64).sum();
                 Ok((count, sum))
             }
-            None => {
-                let count = text.chars().count();
-                let sum: u64 = text.chars().map(|c| c as u64).sum();
+            #[cfg(feature = "openai")]
+            CanonTokenizer::Cl100k(bpe) => {
+                let ids = bpe.encode_ordinary(text);
+                let count = ids.len();
+                let sum: u64 = ids.iter().map(|&id| id as u64).sum();
                 Ok((count, sum))
             }
         }
@@ -1240,6 +1272,22 @@ mod tests {
         unsafe {
             std::env::remove_var(CACHE_DIR_ENV);
         }
+    }
+
+    /// OpenAI バックエンドの汎用性キーがトークン単位で計算されることを確認する
+    /// (cl100k_base はクレート同梱のためネットワーク不要で初期化できる)。
+    #[cfg(feature = "openai")]
+    #[test]
+    fn cl100k_generality_key_is_token_based() {
+        let bpe = tiktoken_rs::cl100k_base().unwrap();
+        let key = |s: &str| {
+            let ids = bpe.encode_ordinary(s);
+            (ids.len(), ids.iter().map(|&id| id as u64).sum::<u64>())
+        };
+        // 同一列の繰り返しはトークン数が厳密に増える(文字数ではなくトークン数で比較)
+        assert!(key("背景") < key("背景背景"));
+        // 部分列はトークン数で上回らない(短い表記が代表に残りやすい)
+        assert!(key("白背景").0 <= key("白い背景").0);
     }
 
     #[test]

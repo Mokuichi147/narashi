@@ -39,8 +39,9 @@ onnx = ["dep:fastembed"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:serde_json"]
 # OpenAI Embeddings API バックエンド(text-embedding-3 系)。ローカル推論を行わず
 # HTTPS で OpenAI API を呼ぶため軽量。`OPENAI_API_KEY` が必要(`OPENAI_BASE_URL` で
-# 互換 API のエンドポイントへ切替も可能)。
-openai = ["dep:ureq", "dep:serde_json"]
+# 互換 API のエンドポイントへ切替も可能)。代表選出のトークン数計算には tiktoken-rs に
+# 埋め込まれた cl100k_base を使う(Hugging Face からのダウンロード無し)。
+openai = ["dep:ureq", "dep:serde_json", "dep:tiktoken-rs"]
 # CLI バイナリ(`narashi` コマンド)。ライブラリとして使うだけなら無効にして `clap` 依存を外せる。
 cli = ["dep:clap"]
 # Apple GPU(Metal)で Candle を実行する。Apple Silicon で利用可能。GPU では f16 matmul も
@@ -78,3 +79,6 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"], optional = true }
 hf-hub = "0.4"
 rayon = "1"
+# OpenAI 系モデルの代表選出用トークナイザ。cl100k_base の語彙をクレートに同梱して
+# いるため、実行時のダウンロード無しでトークン数・トークン ID を計算できる。
+tiktoken-rs = { version = "0.12.0", optional = true }

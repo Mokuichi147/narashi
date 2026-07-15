@@ -111,7 +111,7 @@ cargo run --example benchmark -- bge-zh        # BGE 中国語特化
 cargo run --example benchmark -- all-minilm    # 英語 SentenceTransformers
 cargo run --example benchmark -- clip          # CLIP テキストエンコーダ
 # OpenAI API バックエンド(要 OPENAI_API_KEY・ネットワーク接続・API 利用料。
-# HF からのダウンロードは無く、代表選出は文字ベースのフォールバックキーで行う)
+# HF からのダウンロードは無く、代表選出は同梱の cl100k_base(tiktoken)で行う)
 cargo run --example benchmark -- openai-small  # text-embedding-3-small(未計測)
 cargo run --example benchmark -- openai-large  # text-embedding-3-large(未計測)
 
