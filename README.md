@@ -270,8 +270,11 @@ let n = Narashi::with_options(opts)?;
 
 `--openai-base-url`(またはライブラリの `Options::with_openai_base_url` / 環境変数
 `OPENAI_BASE_URL`)を指定すると、OpenAI 互換の埋め込み API(プロキシ・Ollama / LM Studio /
-vLLM 等のローカルサーバ)へ向けられます(既定: `https://api.openai.com/v1`)。なお代表選出用の
-トークナイザ(cl100k_base 変換の `tokenizer.json`)のみ Hugging Face から取得します。
+vLLM 等のローカルサーバ)へ向けられます(既定: `https://api.openai.com/v1`)。
+
+OpenAI API バックエンドでは **Hugging Face からのダウンロードは一切行いません**(埋め込みは
+API から取得し、代表選出はトークナイザを使わず文字ベースのキー(文字数・コードポイント合計)で
+行います)。
 
 **ローカルサーバー等にエンドポイントを向けるときは API キーは不要です**(未設定なら
 `Authorization` ヘッダを送りません)。キーが必須になるのは既定の OpenAI 本家エンドポイントに
@@ -360,4 +363,4 @@ narashi はモデルの重みを同梱せず、実行時に Hugging Face から�
 | `mpnet` | [sentence-transformers/paraphrase-multilingual-mpnet-base-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-mpnet-base-v2) | Apache 2.0 |
 | `e5-instruct` | [intfloat/multilingual-e5-large-instruct](https://huggingface.co/intfloat/multilingual-e5-large-instruct)(safetensors を Candle で直接読込) | MIT |
 | `qwen3` / `qwen3-4b` / `qwen3-8b` | [Qwen/Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) / [4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) / [8B](https://huggingface.co/Qwen/Qwen3-Embedding-8B)(safetensors を Candle で直接読込) | Apache 2.0 |
-| `openai-small` / `openai-large` | OpenAI text-embedding-3-small / -large(重みダウンロード無し・API サービス) | [OpenAI 利用規約](https://openai.com/policies/)に従う(代表選出用トークナイザは [Xenova/text-embedding-ada-002](https://huggingface.co/Xenova/text-embedding-ada-002) の cl100k_base 変換・原典 [tiktoken](https://github.com/openai/tiktoken) は MIT) |
+| `openai-small` / `openai-large` | OpenAI text-embedding-3-small / -large(ダウンロード無しの API サービス) | [OpenAI 利用規約](https://openai.com/policies/)に従う |
