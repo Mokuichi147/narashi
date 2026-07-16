@@ -195,7 +195,7 @@ $ rm -rf /path/to/cache                # --cache-dir で指定したとき
 
 ```toml
 [dependencies]
-narashi = "0.4"
+narashi = "0.7"
 ```
 
 ### 類似度の算出
